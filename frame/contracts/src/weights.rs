@@ -77,6 +77,7 @@ pub trait WeightInfo {
 	fn seal_random(r: u32, ) -> Weight;
 	fn seal_deposit_event(r: u32, ) -> Weight;
 	fn seal_deposit_event_per_topic_and_kb(t: u32, n: u32, ) -> Weight;
+	fn seal_debug_message(r: u32, ) -> Weight;
 	fn seal_set_rent_allowance(r: u32, ) -> Weight;
 	fn seal_set_storage(r: u32, ) -> Weight;
 	fn seal_set_storage_per_kb(n: u32, ) -> Weight;
@@ -396,6 +397,13 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 			.saturating_add(T::DbWeight::get().reads((100 as Weight).saturating_mul(t as Weight)))
 			.saturating_add(T::DbWeight::get().writes(1 as Weight))
 			.saturating_add(T::DbWeight::get().writes((100 as Weight).saturating_mul(t as Weight)))
+	}
+	fn seal_debug_message(r: u32, ) -> Weight {
+		(122_500_000 as Weight)
+			// Standard Error: 1_075_000
+			.saturating_add((185_650_000 as Weight).saturating_mul(r as Weight))
+			.saturating_add(T::DbWeight::get().reads(4 as Weight))
+			.saturating_add(T::DbWeight::get().writes(1 as Weight))
 	}
 	fn seal_set_rent_allowance(r: u32, ) -> Weight {
 		(142_734_000 as Weight)
@@ -1057,6 +1065,13 @@ impl WeightInfo for () {
 			.saturating_add(RocksDbWeight::get().reads((100 as Weight).saturating_mul(t as Weight)))
 			.saturating_add(RocksDbWeight::get().writes(1 as Weight))
 			.saturating_add(RocksDbWeight::get().writes((100 as Weight).saturating_mul(t as Weight)))
+	}
+	fn seal_debug_message(r: u32, ) -> Weight {
+		(122_500_000 as Weight)
+			// Standard Error: 1_075_000
+			.saturating_add((185_650_000 as Weight).saturating_mul(r as Weight))
+			.saturating_add(RocksDbWeight::get().reads(4 as Weight))
+			.saturating_add(RocksDbWeight::get().writes(1 as Weight))
 	}
 	fn seal_set_rent_allowance(r: u32, ) -> Weight {
 		(142_734_000 as Weight)
