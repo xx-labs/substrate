@@ -2961,22 +2961,7 @@ dependencies = [
 [[package]]
 name = "jsonrpsee-types"
 version = "0.2.0-alpha.6"
-source = "git+https://github.com/paritytech/jsonrpsee?branch=master#74d9d77eafceed6d5fcfb31ae67f2bd0199b935e"
-dependencies = [
- "async-trait",
- "beef",
- "futures-channel",
- "futures-util",
- "log",
- "serde",
- "serde_json",
- "thiserror",
-]
-
-[[package]]
-name = "jsonrpsee-types"
-version = "0.2.0-alpha.6"
-source = "git+https://github.com/paritytech/jsonrpsee?branch=na-subscription-with-input#622d2446f1bc7dc3bba93eac8c641c311d6eaf80"
+source = "git+https://github.com/paritytech/jsonrpsee?branch=na-subscription-with-input#4f1743abe7e91a0f490673cd00218d3c28800e21"
 dependencies = [
  "async-trait",
  "beef",
@@ -3002,7 +2987,7 @@ dependencies = [
 [[package]]
 name = "jsonrpsee-utils"
 version = "0.2.0-alpha.6"
-source = "git+https://github.com/paritytech/jsonrpsee?branch=na-subscription-with-input#622d2446f1bc7dc3bba93eac8c641c311d6eaf80"
+source = "git+https://github.com/paritytech/jsonrpsee?branch=na-subscription-with-input#4f1743abe7e91a0f490673cd00218d3c28800e21"
 dependencies = [
  "anyhow",
  "futures-channel",
@@ -3017,7 +3002,7 @@ dependencies = [
 [[package]]
 name = "jsonrpsee-ws-server"
 version = "0.2.0-alpha.6"
-source = "git+https://github.com/paritytech/jsonrpsee?branch=na-subscription-with-input#622d2446f1bc7dc3bba93eac8c641c311d6eaf80"
+source = "git+https://github.com/paritytech/jsonrpsee?branch=na-subscription-with-input#4f1743abe7e91a0f490673cd00218d3c28800e21"
 dependencies = [
  "anyhow",
  "futures-channel",
@@ -7887,7 +7872,7 @@ dependencies = [
  "jsonrpc-core-client",
  "jsonrpc-derive",
  "jsonrpc-pubsub",
- "jsonrpsee-types 0.2.0-alpha.6 (git+https://github.com/paritytech/jsonrpsee?branch=master)",
+ "jsonrpsee-types 0.2.0-alpha.6 (git+https://github.com/paritytech/jsonrpsee?branch=na-subscription-with-input)",
  "log",
  "parity-scale-codec",
  "parking_lot 0.11.1",

@@ -21,15 +21,15 @@
 #[cfg(test)]
 mod tests;
 
-use std::{sync::Arc, convert::TryInto, marker::PhantomData};
+use std::{sync::Arc, convert::TryInto};
 
 use sp_blockchain::HeaderBackend;
 
 use rpc::futures::{Future, future::result};
-use futures::future::TryFutureExt;
+use futures::{StreamExt, future::TryFutureExt};
 use sc_rpc_api::DenyUnsafe;
 use jsonrpc_pubsub::{typed::Subscriber, SubscriptionId};
-use jsonrpsee_ws_server::{RpcModule, RpcContextModule, SubscriptionSink};
+use jsonrpsee_ws_server::{RpcModule, RpcContextModule, SubscriptionSink, SubscriptionSinkParams};
 use jsonrpsee_types::error::{Error as JsonRpseeError, CallError as RpseeCallError};
 use codec::{Encode, Decode};
 use sp_core::Bytes;
@@ -37,7 +37,7 @@ use sp_keystore::{SyncCryptoStorePtr, SyncCryptoStore};
 use sp_api::ProvideRuntimeApi;
 use sp_runtime::generic;
 use sp_transaction_pool::{
-	TransactionPool, InPoolTransaction, TransactionStatus, TransactionSource,
+	TransactionPool, TransactionFor, InPoolTransaction, TransactionStatus, TransactionSource,
 	BlockHash, TxHash, error::IntoPoolError,
 };
 use sp_session::SessionKeys;
@@ -193,7 +193,7 @@ impl<P, Client> Author<P, Client>
 
 		let mut rpc_module = ctx_module.into_module();
 
-		let sink = rpc_module.register_subscription(
+		let sink: SubscriptionSinkParams<Bytes> = rpc_module.register_subscription_with_params(
 			"author_submitAndWatchExtrinsic",
 			"author_unwatchExtrinsic"
 		)?;
@@ -312,55 +312,11 @@ impl<P, Client> AuthorApi<TxHash<P>, BlockHash<P>> for Author<P, Client>
 		_subscriber: Subscriber<TransactionStatus<TxHash<P>, BlockHash<P>>>,
 		_xt: Bytes,
 	) {
-		todo!();
-		// let submit = || -> Result<_> {
-		//     let best_block_hash = self.client.info().best_hash;
-		//     let dxt = TransactionFor::<P>::decode(&mut &xt[..])
-		//         .map_err(error::Error::from)?;
-		//     Ok(
-		//         self.pool
-		//             .submit_and_watch(&generic::BlockId::hash(best_block_hash), TX_SOURCE, dxt)
-		//             .map_err(|e| e.into_pool_error()
-		//                 .map(error::Error::from)
-		//                 .unwrap_or_else(|e| error::Error::Verification(Box::new(e)).into())
-		//             )
-		//     )
-		// };
-		//
-		// let subscriptions = self.subscriptions.clone();
-		// let future = ready(submit())
-		//     .and_then(|res| res)
-		//     // convert the watcher into a `Stream`
-		//     .map(|res| res.map(|stream| stream.map(|v| Ok::<_, ()>(Ok(v)))))
-		//     // now handle the import result,
-		//     // start a new subscrition
-		//     .map(move |result| match result {
-		//         Ok(watcher) => {
-		//             subscriptions.add(subscriber, move |sink| {
-		//                 sink
-		//                     .sink_map_err(|e| log::debug!("Subscription sink failed: {:?}", e))
-		//                     .send_all(Compat::new(watcher))
-		//                     .map(|_| ())
-		//             });
-		//         },
-		//         Err(err) => {
-		//             warn!("Failed to submit extrinsic: {}", err);
-		//             // reject the subscriber (ignore errors - we don't care if subscriber is no longer there).
-		//             let _ = subscriber.reject(err.into());
-		//         },
-		//     });
-		//
-		//
-		// let res = self.subscriptions.executor()
-		//     .execute(Box::new(Compat::new(future.map(|_| Ok(())))));
-		// if res.is_err() {
-		//     warn!("Error spawning subscription RPC task.");
-		// }
+		todo!("remove");
 	}
 
 	fn unwatch_extrinsic(&self, _metadata: Option<Self::Metadata>, _id: SubscriptionId) -> Result<bool> {
-		todo!();
-		// Ok(self.subscriptions.cancel(id))
+		todo!("remove");
 	}
 }
 
@@ -368,7 +324,7 @@ impl<P, Client> AuthorApi<TxHash<P>, BlockHash<P>> for Author<P, Client>
 /// Subscriber to Author RPC API.
 pub struct AuthorSubSink<P, Client> {
 	client: Arc<Client>,
-	xt_sink: SubscriptionSink,
+	xt_sink: SubscriptionSinkParams<Bytes>,
 	pool: Arc<P>
 }
 
@@ -382,13 +338,36 @@ where
 	pub fn new(
 		client: Arc<Client>,
 		pool: Arc<P>,
-		xt_sink: SubscriptionSink
+		xt_sink: SubscriptionSinkParams<Bytes>,
 	) -> Self {
 		Self { client, pool, xt_sink }
 	}
 
-	/// Start subscribe to chain events.
-	pub async fn subscribe(mut self) {
-		todo!();
+	/// Start `WatchExtrinsic`
+	pub async fn subscribe(self) {
+		loop {
+			let handle = match self.xt_sink.next() {
+				Some(h) => h,
+				None => continue,
+			};
+			let xt = handle.params();
+			let best_block_hash = self.client.info().best_hash;
+			let dxt = TransactionFor::<P>::decode(&mut &xt[..]).unwrap();
+			let stream = match self.pool
+				.submit_and_watch(&generic::BlockId::hash(best_block_hash), TX_SOURCE, dxt)
+				.await {
+				Ok(stream) => stream,
+				// just drop the subscription.
+				Err(_) => continue,
+			};
+
+			// TODO: spawn does or something else will block the thread until
+			// the xt has been finalized.
+			// better to wrap the executor inside here.
+			stream.for_each(|item| {
+				let _ = handle.send(&item);
+				futures::future::ready(())
+			}).await;
+		}
 	}
 }
