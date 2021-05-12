@@ -361,9 +361,8 @@ where
 				Err(_) => continue,
 			};
 
-			// TODO: spawn does or something else will block the thread until
-			// the xt has been finalized.
-			// better to wrap the executor inside here.
+			// TODO: spawn or do something else because this will block the thread until
+			// the xt_stream has been finished.
 			stream.for_each(|item| {
 				let _ = handle.send(&item);
 				futures::future::ready(())
