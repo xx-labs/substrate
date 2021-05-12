@@ -2974,6 +2974,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "jsonrpsee-types"
+version = "0.2.0-alpha.6"
+source = "git+https://github.com/paritytech/jsonrpsee?branch=na-subscription-with-input#622d2446f1bc7dc3bba93eac8c641c311d6eaf80"
+dependencies = [
+ "async-trait",
+ "beef",
+ "futures-channel",
+ "futures-util",
+ "log",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "jsonrpsee-utils"
 version = "0.2.0-alpha.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2987,12 +3002,12 @@ dependencies = [
 [[package]]
 name = "jsonrpsee-utils"
 version = "0.2.0-alpha.6"
-source = "git+https://github.com/paritytech/jsonrpsee?branch=master#74d9d77eafceed6d5fcfb31ae67f2bd0199b935e"
+source = "git+https://github.com/paritytech/jsonrpsee?branch=na-subscription-with-input#622d2446f1bc7dc3bba93eac8c641c311d6eaf80"
 dependencies = [
  "anyhow",
  "futures-channel",
  "futures-util",
- "jsonrpsee-types 0.2.0-alpha.6 (git+https://github.com/paritytech/jsonrpsee?branch=master)",
+ "jsonrpsee-types 0.2.0-alpha.6 (git+https://github.com/paritytech/jsonrpsee?branch=na-subscription-with-input)",
  "log",
  "rustc-hash",
  "serde",
@@ -3002,13 +3017,13 @@ dependencies = [
 [[package]]
 name = "jsonrpsee-ws-server"
 version = "0.2.0-alpha.6"
-source = "git+https://github.com/paritytech/jsonrpsee?branch=master#74d9d77eafceed6d5fcfb31ae67f2bd0199b935e"
+source = "git+https://github.com/paritytech/jsonrpsee?branch=na-subscription-with-input#622d2446f1bc7dc3bba93eac8c641c311d6eaf80"
 dependencies = [
  "anyhow",
  "futures-channel",
  "futures-util",
- "jsonrpsee-types 0.2.0-alpha.6 (git+https://github.com/paritytech/jsonrpsee?branch=master)",
- "jsonrpsee-utils 0.2.0-alpha.6 (git+https://github.com/paritytech/jsonrpsee?branch=master)",
+ "jsonrpsee-types 0.2.0-alpha.6 (git+https://github.com/paritytech/jsonrpsee?branch=na-subscription-with-input)",
+ "jsonrpsee-utils 0.2.0-alpha.6 (git+https://github.com/paritytech/jsonrpsee?branch=na-subscription-with-input)",
  "log",
  "parking_lot 0.11.1",
  "rand 0.8.3",
@@ -7827,7 +7842,7 @@ dependencies = [
  "hash-db",
  "jsonrpc-core",
  "jsonrpc-pubsub",
- "jsonrpsee-types 0.2.0-alpha.6 (git+https://github.com/paritytech/jsonrpsee?branch=master)",
+ "jsonrpsee-types 0.2.0-alpha.6 (git+https://github.com/paritytech/jsonrpsee?branch=na-subscription-with-input)",
  "jsonrpsee-ws-server",
  "lazy_static",
  "log",

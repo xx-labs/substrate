@@ -21,7 +21,7 @@
 #[cfg(test)]
 mod tests;
 
-use std::{sync::Arc, convert::TryInto};
+use std::{sync::Arc, convert::TryInto, marker::PhantomData};
 
 use sp_blockchain::HeaderBackend;
 
@@ -29,7 +29,7 @@ use rpc::futures::{Future, future::result};
 use futures::future::TryFutureExt;
 use sc_rpc_api::DenyUnsafe;
 use jsonrpc_pubsub::{typed::Subscriber, SubscriptionId};
-use jsonrpsee_ws_server::{RpcModule, RpcContextModule};
+use jsonrpsee_ws_server::{RpcModule, RpcContextModule, SubscriptionSink};
 use jsonrpsee_types::error::{Error as JsonRpseeError, CallError as RpseeCallError};
 use codec::{Encode, Decode};
 use sp_core::Bytes;
@@ -83,7 +83,10 @@ impl<P, Client> Author<P, Client>
 		Client::Api: SessionKeys<P::Block>,
 {
 	/// Convert a [`Author`] to an [`RpcModule`]. Registers all the RPC methods available with the RPC server.
-	pub fn into_rpc_module(self) -> std::result::Result<RpcModule, JsonRpseeError> {
+	pub fn into_rpc_module(self) -> std::result::Result<(RpcModule, AuthorSubSink<P, Client>), JsonRpseeError> {
+		let client = self.client.clone();
+		let pool = self.pool.clone();
+
 		let mut ctx_module = RpcContextModule::new(self);
 
 		ctx_module.register_method::<_, TxHash<P>>("author_submitExtrinsic", |params, author| {
@@ -131,7 +134,15 @@ impl<P, Client> Author<P, Client>
 			Ok(())
 		})?;
 
-		Ok(ctx_module.into_module())
+		let mut rpc_module = ctx_module.into_module();
+
+		let sink = rpc_module.register_subscription(
+			"author_submitAndWatchExtrinsic",
+			"author_unwatchExtrinsic"
+		)?;
+
+		let sub = AuthorSubSink::new(client, pool, sink);
+		Ok((rpc_module, sub))
 	}
 
 }
@@ -293,5 +304,34 @@ impl<P, Client> AuthorApi<TxHash<P>, BlockHash<P>> for Author<P, Client>
 	fn unwatch_extrinsic(&self, _metadata: Option<Self::Metadata>, _id: SubscriptionId) -> Result<bool> {
 		todo!();
 		// Ok(self.subscriptions.cancel(id))
+	}
+}
+
+
+/// Subscriber to Author RPC API.
+pub struct AuthorSubSink<P, Client> {
+	client: Arc<Client>,
+	xt_sink: SubscriptionSink,
+	pool: Arc<P>
+}
+
+impl<P, Client> AuthorSubSink<P, Client>
+where
+	P: TransactionPool + Sync + Send + 'static,
+	Client: HeaderBackend<P::Block> + ProvideRuntimeApi<P::Block> + Send + Sync + 'static,
+	Client::Api: SessionKeys<P::Block>,
+{
+	/// Create new a Author RPC API subscription.
+	pub fn new(
+		client: Arc<Client>,
+		pool: Arc<P>,
+		xt_sink: SubscriptionSink
+	) -> Self {
+		Self { client, pool, xt_sink }
+	}
+
+	/// Start subscribe to chain events.
+	pub async fn subscribe(mut self) {
+		todo!();
 	}
 }

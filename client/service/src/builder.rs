@@ -766,13 +766,14 @@ fn gen_rpc_module<TBl, TBackend, TCl, TExPool>(
 
 	let mut rpc_api = Vec::new();
 	// TODO: get rid of expect!.
-	let (chain_rpc, chain_subs) = chain.into_rpc_module().expect("TODO: why doesn't gen_handler return Result?");
-	let author_rpc = author.into_rpc_module().expect("TODO: why doesn't gen_handler return Result?");
+	let (chain_rpc, chain_sub) = chain.into_rpc_module().expect("TODO: why doesn't gen_handler return Result?");
+	let (author_rpc, author_sub) = author.into_rpc_module().expect("TODO: why doesn't gen_handler return Result?");
 
 	rpc_api.push(chain_rpc);
 	rpc_api.push(author_rpc);
 
-	task_executor.execute_new(Box::pin(chain_subs.subscribe()));
+	task_executor.execute_new(Box::pin(chain_sub.subscribe()));
+	task_executor.execute_new(Box::pin(author_sub.subscribe()));
 
 	rpc_api
 }
