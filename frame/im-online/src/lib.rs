@@ -571,8 +571,8 @@ impl<T: Config> Pallet<T> {
 	pub(crate) fn send_heartbeats(
 		block_number: T::BlockNumber,
 	) -> OffchainResult<T, impl Iterator<Item = OffchainResult<T, ()>>> {
-		const START_HEARTBEAT_PERIOD: Percent = Percent::from_percent(40);
-		const END_HEARTBEAT_RANDOM_PERIOD: Percent = Percent::from_percent(65);
+		const START_HEARTBEAT_RANDOM_PERIOD: Percent = Percent::from_percent(40);
+		const START_HEARTBEAT_FINAL_PERIOD: Percent = Percent::from_percent(65);
 
 		fn one_tenth_random_choice() -> bool {
 			let seed = sp_io::offchain::random_seed();
@@ -590,8 +590,8 @@ impl<T: Config> Pallet<T> {
 			// toss, then we'll fallback to sending the heartbeat regardless of the coin toss.
 			// the idea is to prevent all nodes sending the heartbeats at the same block and
 			// causing a temporary (but deterministic) spike in transactions.
-			progress >= START_HEARTBEAT_PERIOD && one_tenth_random_choice() ||
-				progress >= END_HEARTBEAT_RANDOM_PERIOD
+			progress >= START_HEARTBEAT_RANDOM_PERIOD && one_tenth_random_choice() ||
+				progress >= START_HEARTBEAT_FINAL_PERIOD
 		} else {
 			// otherwise we fallback to using the block number calculated at the beginning
 			// of the session that should roughly correspond to the middle of the session
