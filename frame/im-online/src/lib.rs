@@ -574,11 +574,11 @@ impl<T: Config> Pallet<T> {
 		const START_HEARTBEAT_PERIOD: Percent = Percent::from_percent(40);
 		const END_HEARTBEAT_RANDOM_PERIOD: Percent = Percent::from_percent(65);
 
-		fn one_third_random_choice() -> bool {
+		fn one_tenth_random_choice() -> bool {
 			let seed = sp_io::offchain::random_seed();
 			let random = <u32>::decode(&mut TrailingZeroInput::new(seed.as_ref()))
 				.expect("input is padded with zeroes; qed") % 1000;
-			random < 333
+			random < 100
 		}
 
 		let should_heartbeat = if let (Some(progress), _) =
@@ -586,11 +586,11 @@ impl<T: Config> Pallet<T> {
 		{
 			// we try to get an estimate of the current session progress first since it
 			// should provide more accurate results. we will start an early heartbeat period
-			// where we'll randomly pick whether to heartbeat or not based on a 1/3 chance coin
+			// where we'll randomly pick whether to heartbeat or not based on a 1/10 chance coin
 			// toss, then we'll fallback to sending the heartbeat regardless of the coin toss.
 			// the idea is to prevent all nodes sending the heartbeats at the same block and
 			// causing a temporary (but deterministic) spike in transactions.
-			progress >= START_HEARTBEAT_PERIOD && one_third_random_choice() ||
+			progress >= START_HEARTBEAT_PERIOD && one_tenth_random_choice() ||
 				progress >= END_HEARTBEAT_RANDOM_PERIOD
 		} else {
 			// otherwise we fallback to using the block number calculated at the beginning
