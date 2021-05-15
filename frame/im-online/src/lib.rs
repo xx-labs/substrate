@@ -81,7 +81,7 @@ use sp_std::prelude::*;
 use sp_std::convert::TryInto;
 use sp_runtime::{
 	offchain::storage::StorageValueRef,
-	traits::{AtLeast32BitUnsigned, Convert, Saturating},
+	traits::{AtLeast32BitUnsigned, Convert, Saturating, TrailingZeroInput},
 	Perbill, Percent, RuntimeDebug,
 };
 use sp_staking::{
@@ -571,15 +571,27 @@ impl<T: Config> Pallet<T> {
 	pub(crate) fn send_heartbeats(
 		block_number: T::BlockNumber,
 	) -> OffchainResult<T, impl Iterator<Item = OffchainResult<T, ()>>> {
-		const HALF_SESSION: Percent = Percent::from_percent(50);
+		const START_HEARTBEAT_PERIOD: Percent = Percent::from_percent(40);
+		const END_HEARTBEAT_RANDOM_PERIOD: Percent = Percent::from_percent(65);
+
+		fn two_thirds_random_choice() -> bool {
+			let seed = sp_io::offchain::random_seed();
+			let random = <u32>::decode(&mut TrailingZeroInput::new(seed.as_ref()))
+				.expect("input is padded with zeroes; qed") % 1000;
+			random > 333
+		}
 
 		let too_early = if let (Some(progress), _) =
 			T::NextSessionRotation::estimate_current_session_progress(block_number)
 		{
 			// we try to get an estimate of the current session progress first since it
-			// should provide more accurate results and send the heartbeat if we're halfway
-			// through the session.
-			progress < HALF_SESSION
+			// should provide more accurate results. we will start an early heartbeat period
+			// where we'll randomly pick whether to heartbeat or not based on a 1/3 chance coin
+			// toss, then we'll fallback to sending the heartbeat regardless of the coin toss.
+			// the idea is to prevent all nodes sending the heartbeats at the same block and
+			// causing a temporary (but deterministic) spike in transactions.
+			progress < END_HEARTBEAT_RANDOM_PERIOD ||
+				progress > START_HEARTBEAT_PERIOD && two_thirds_random_choice()
 		} else {
 			// otherwise we fallback to using the block number calculated at the beginning
 			// of the session that should roughly correspond to the middle of the session
