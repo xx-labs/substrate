@@ -574,14 +574,14 @@ impl<T: Config> Pallet<T> {
 		const START_HEARTBEAT_PERIOD: Percent = Percent::from_percent(40);
 		const END_HEARTBEAT_RANDOM_PERIOD: Percent = Percent::from_percent(65);
 
-		fn two_thirds_random_choice() -> bool {
+		fn one_third_random_choice() -> bool {
 			let seed = sp_io::offchain::random_seed();
 			let random = <u32>::decode(&mut TrailingZeroInput::new(seed.as_ref()))
 				.expect("input is padded with zeroes; qed") % 1000;
-			random > 333
+			random < 333
 		}
 
-		let too_early = if let (Some(progress), _) =
+		let should_heartbeat = if let (Some(progress), _) =
 			T::NextSessionRotation::estimate_current_session_progress(block_number)
 		{
 			// we try to get an estimate of the current session progress first since it
@@ -590,16 +590,16 @@ impl<T: Config> Pallet<T> {
 			// toss, then we'll fallback to sending the heartbeat regardless of the coin toss.
 			// the idea is to prevent all nodes sending the heartbeats at the same block and
 			// causing a temporary (but deterministic) spike in transactions.
-			progress < END_HEARTBEAT_RANDOM_PERIOD ||
-				progress > START_HEARTBEAT_PERIOD && two_thirds_random_choice()
+			progress >= START_HEARTBEAT_PERIOD && one_third_random_choice() ||
+				progress >= END_HEARTBEAT_RANDOM_PERIOD
 		} else {
 			// otherwise we fallback to using the block number calculated at the beginning
 			// of the session that should roughly correspond to the middle of the session
 			let heartbeat_after = <HeartbeatAfter<T>>::get();
-			block_number < heartbeat_after
+			block_number >= heartbeat_after
 		};
 
-		if too_early {
+		if !should_heartbeat {
 			return Err(OffchainErr::TooEarly);
 		}
 
