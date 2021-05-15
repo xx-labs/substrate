@@ -577,8 +577,8 @@ impl<T: Config> Pallet<T> {
 		fn one_tenth_random_choice() -> bool {
 			let seed = sp_io::offchain::random_seed();
 			let random = <u32>::decode(&mut TrailingZeroInput::new(seed.as_ref()))
-				.expect("input is padded with zeroes; qed") % 1000;
-			random < 100
+				.expect("input is padded with zeroes; qed") % 100;
+			random < 10
 		}
 
 		let should_heartbeat = if let (Some(progress), _) =
