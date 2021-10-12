@@ -43,11 +43,12 @@ use sp_std::{collections::btree_map::BTreeMap, prelude::*};
 
 use crate::{
 	log, slashing, weights::WeightInfo, ActiveEraInfo, BalanceOf, EraIndex, EraPayout, Exposure,
-	ExposureOf, Forcing, IndividualExposure, Nominations, PositiveImbalanceOf, RewardDestination,
-	SessionInterface, StakingLedger, ValidatorPrefs,
+	ExposureOf, Forcing, IndividualExposure, Nominations, PositiveImbalanceOf,
+	SessionInterface, StakingLedger, ValidatorPrefs, CmixHandler, CustodyHandler,
 };
 
 use super::{pallet::*, STAKING_ID};
+use frame_system::ensure_root;
 
 impl<T: Config> Pallet<T> {
 	/// The total balance that can be slashed from a stash account as of right now.
@@ -170,7 +171,9 @@ impl<T: Config> Pallet<T> {
 		if let Some(imbalance) =
 			Self::make_payout(&ledger.stash, validator_staking_payout + validator_commission_payout)
 		{
-			Self::deposit_event(Event::<T>::Rewarded(ledger.stash, imbalance.peek()));
+			let amount = imbalance.peek();
+			T::Reward::on_unbalanced(imbalance);
+			Self::deposit_event(Event::<T>::Rewarded(ledger.stash, amount));
 		}
 
 		// Track the number of payout ops to nominators. Note:
@@ -187,10 +190,10 @@ impl<T: Config> Pallet<T> {
 				nominator_exposure_part * validator_leftover_payout;
 			// We can now make nominator payout:
 			if let Some(imbalance) = Self::make_payout(&nominator.who, nominator_reward) {
-				// Note: this logic does not count payouts for `RewardDestination::None`.
 				nominator_payout_count += 1;
-				let e = Event::<T>::Rewarded(nominator.who.clone(), imbalance.peek());
-				Self::deposit_event(e);
+				let amount = imbalance.peek();
+				T::Reward::on_unbalanced(imbalance);
+				Self::deposit_event(Event::<T>::Rewarded(nominator.who.clone(), amount));
 			}
 		}
 
@@ -219,26 +222,17 @@ impl<T: Config> Pallet<T> {
 	}
 
 	/// Actually make a payment to a staker. This uses the currency's reward function
-	/// to pay the right payee for the given staker account.
+	/// to pay the reward into the stash account, increasing the amount at stake.
 	fn make_payout(stash: &T::AccountId, amount: BalanceOf<T>) -> Option<PositiveImbalanceOf<T>> {
-		let dest = Self::payee(stash);
-		match dest {
-			RewardDestination::Controller => Self::bonded(stash)
-				.and_then(|controller| Some(T::Currency::deposit_creating(&controller, amount))),
-			RewardDestination::Stash => T::Currency::deposit_into_existing(stash, amount).ok(),
-			RewardDestination::Staked => Self::bonded(stash)
-				.and_then(|c| Self::ledger(&c).map(|l| (c, l)))
-				.and_then(|(controller, mut l)| {
-					l.active += amount;
-					l.total += amount;
-					let r = T::Currency::deposit_into_existing(stash, amount).ok();
-					Self::update_ledger(&controller, &l);
-					r
-				}),
-			RewardDestination::Account(dest_account) =>
-				Some(T::Currency::deposit_creating(&dest_account, amount)),
-			RewardDestination::None => None,
-		}
+		Self::bonded(stash)
+			.and_then(|c| Self::ledger(&c).map(|l| (c, l)))
+			.and_then(|(controller, mut l)| {
+				l.active += amount;
+				l.total += amount;
+				let r = T::Currency::deposit_into_existing(stash, amount).ok();
+				Self::update_ledger(&controller, &l);
+				r
+			})
 	}
 
 	/// Plan a new session potentially trigger a new era.
@@ -384,6 +378,9 @@ impl<T: Config> Pallet<T> {
 
 			// Clear offending validators.
 			<OffendingValidators<T>>::kill();
+
+			// Inform xx network pallet that era is ending
+			T::CmixHandler::end_era();
 		}
 	}
 
@@ -534,7 +531,13 @@ impl<T: Config> Pallet<T> {
 				support
 					.voters
 					.into_iter()
-					.map(|(nominator, weight)| (nominator, to_currency(weight)))
+					.filter_map(|(nominator, weight)| {
+						if T::CustodyHandler::is_custody_account(&nominator) {
+							None
+						} else {
+							Some((nominator, to_currency(weight)))
+						}
+					})
 					.for_each(|(nominator, stake)| {
 						if nominator == validator {
 							own = own.saturating_add(stake);
@@ -565,7 +568,6 @@ impl<T: Config> Pallet<T> {
 		<Bonded<T>>::remove(stash);
 		<Ledger<T>>::remove(&controller);
 
-		<Payee<T>>::remove(stash);
 		Self::do_remove_validator(stash);
 		Self::do_remove_nominator(stash);
 
@@ -617,9 +619,42 @@ impl<T: Config> Pallet<T> {
 	pub fn reward_by_ids(validators_points: impl IntoIterator<Item = (T::AccountId, u32)>) {
 		if let Some(active_era) = Self::active_era() {
 			<ErasRewardPoints<T>>::mutate(active_era.index, |era_rewards| {
+				let total = &mut era_rewards.total;
 				for (validator, points) in validators_points.into_iter() {
-					*era_rewards.individual.entry(validator).or_default() += points;
-					era_rewards.total += points;
+					// If for some reason the validator is not present, initialize with 1 point
+					*era_rewards.individual.entry(validator).or_insert_with(
+						|| { *total += 1; 1 }) += points;
+					*total += points;
+				}
+			});
+		}
+	}
+
+	/// Remove reward points from validators using their stash account ID.
+	///
+	/// Validators are keyed by stash account ID and must be in the current elected set.
+	///
+	/// For each element in the iterator the given number of points in u32 is removed from the
+	/// validator, thus duplicates are handled.
+	///
+	/// The subtraction of points saturates at 1, to ensure that total era points can never reach 0.
+	///
+	/// COMPLEXITY: Complexity is `number_of_validator_to_deduct x current_elected_len`.
+	pub fn deduct_by_ids(
+		validators_points: impl IntoIterator<Item = (T::AccountId, u32)>
+	) {
+		if let Some(active_era) = Self::active_era() {
+			<ErasRewardPoints<T>>::mutate(active_era.index, |era_rewards| {
+				let total = &mut era_rewards.total;
+				for (validator, points) in validators_points.into_iter() {
+					// If for some reason the validator is not present, initialize with 1 point
+					let curr = era_rewards.individual.entry(validator).or_insert_with(
+						|| { *total += 1; 1 });
+					// Deduction is the smallest of (curr-1, points)
+					let deduction = (*curr-1).min(points);
+					// Deduct points, nothing changes if deduction = 0, i.e curr = 1
+					*curr -= deduction;
+					*total -= deduction;
 				}
 			});
 		}
@@ -809,10 +844,16 @@ impl<T: Config> Pallet<T> {
 	/// NOTE: you must ALWAYS use this function to add a validator to the system. Any access to
 	/// `Validators`, its counter, or `VoterList` outside of this function is almost certainly
 	/// wrong.
-	pub fn do_add_validator(who: &T::AccountId, prefs: ValidatorPrefs) {
+	pub fn do_add_validator(who: &T::AccountId, prefs: ValidatorPrefs<T::Hash>) {
 		if !Validators::<T>::contains_key(who) {
-			CounterForValidators::<T>::mutate(|x| x.saturating_inc())
+			CounterForValidators::<T>::mutate(|x| x.saturating_inc());
+		} else {
+			// Clear current cmix id
+			let exist_prefs = <Validators<T>>::get(who);
+			<CmixIds<T>>::remove(&exist_prefs.cmix_root);
 		}
+		// Insert cmix id
+		<CmixIds<T>>::insert(&prefs.cmix_root.clone(), ());
 		Validators::<T>::insert(who, prefs);
 	}
 
@@ -826,7 +867,8 @@ impl<T: Config> Pallet<T> {
 	/// wrong.
 	pub fn do_remove_validator(who: &T::AccountId) -> bool {
 		if Validators::<T>::contains_key(who) {
-			Validators::<T>::remove(who);
+			let prefs = <Validators<T>>::take(who);
+			<CmixIds<T>>::remove(&prefs.cmix_root);
 			CounterForValidators::<T>::mutate(|x| x.saturating_dec());
 			true
 		} else {
@@ -842,6 +884,14 @@ impl<T: Config> Pallet<T> {
 			weight,
 			DispatchClass::Mandatory,
 		);
+	}
+
+	/// Check if origin is admin
+	pub fn ensure_admin(o: T::Origin) -> DispatchResult {
+		T::AdminOrigin::try_origin(o)
+			.map(|_| ())
+			.or_else(ensure_root)?;
+		Ok(())
 	}
 }
 
@@ -951,7 +1001,7 @@ impl<T: Config> ElectionDataProvider<T::AccountId, BlockNumberFor<T>> for Pallet
 		);
 		Self::do_add_validator(
 			&target,
-			ValidatorPrefs { commission: Perbill::zero(), blocked: false },
+			ValidatorPrefs { commission: Perbill::zero(), blocked: false, cmix_root: T::Hash::default() },
 		);
 	}
 
@@ -990,7 +1040,7 @@ impl<T: Config> ElectionDataProvider<T::AccountId, BlockNumberFor<T>> for Pallet
 			);
 			Self::do_add_validator(
 				&v,
-				ValidatorPrefs { commission: Perbill::zero(), blocked: false },
+				ValidatorPrefs { commission: Perbill::zero(), blocked: false, cmix_root: T::Hash::default() },
 			);
 		});
 
@@ -1090,19 +1140,16 @@ impl<T: Config> historical::SessionManager<T::AccountId, Exposure<T::AccountId, 
 	}
 }
 
-/// Add reward points to block authors:
-/// * 20 points to the block producer for producing a (non-uncle) block in the relay chain,
-/// * 2 points to the block producer for each reference to a previously unreferenced uncle, and
-/// * 1 point to the producer of each referenced uncle block.
+/// Add reward points to block producer
+/// Number of points is read from xx network pallet
 impl<T> pallet_authorship::EventHandler<T::AccountId, T::BlockNumber> for Pallet<T>
 where
 	T: Config + pallet_authorship::Config + pallet_session::Config,
 {
 	fn note_author(author: T::AccountId) {
-		Self::reward_by_ids(vec![(author, 20)])
+		Self::reward_by_ids(vec![(author, T::CmixHandler::get_block_points())])
 	}
-	fn note_uncle(author: T::AccountId, _age: T::BlockNumber) {
-		Self::reward_by_ids(vec![(<pallet_authorship::Pallet<T>>::author(), 2), (author, 1)])
+	fn note_uncle(_author: T::AccountId, _age: T::BlockNumber) {
 	}
 }
 

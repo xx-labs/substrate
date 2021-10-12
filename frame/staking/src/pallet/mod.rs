@@ -41,8 +41,8 @@ pub use impls::*;
 use crate::{
 	log, migrations, slashing, weights::WeightInfo, ActiveEraInfo, BalanceOf, EraIndex, EraPayout,
 	EraRewardPoints, Exposure, Forcing, NegativeImbalanceOf, Nominations, PositiveImbalanceOf,
-	Releases, RewardDestination, SessionInterface, StakingLedger, UnappliedSlash, UnlockChunk,
-	ValidatorPrefs,
+	Releases, SessionInterface, StakingLedger, UnappliedSlash, UnlockChunk,
+	ValidatorPrefs, CmixHandler, CustodyHandler,
 };
 
 pub const MAX_UNLOCKING_CHUNKS: usize = 32;
@@ -88,6 +88,18 @@ pub mod pallet {
 			Self::BlockNumber,
 			DataProvider = Pallet<Self>,
 		>;
+
+		/// Handler for xx-cmix pallet
+		/// used to retrieve block points and to handle end of era
+		type CmixHandler: CmixHandler;
+
+		/// Handler used to retrieve which accounts are under custody
+        /// so they can be excluded from validator exposures
+		type CustodyHandler: CustodyHandler<Self::AccountId, BalanceOf<Self>>;
+
+		/// Origin used to change important staking parameters
+		/// expected to be replaced by democracy
+		type AdminOrigin: EnsureOrigin<Self::Origin>;
 
 		/// Maximum number of nominations per nominator.
 		const MAX_NOMINATIONS: u32;
@@ -215,19 +227,19 @@ pub mod pallet {
 	pub type Ledger<T: Config> =
 		StorageMap<_, Blake2_128Concat, T::AccountId, StakingLedger<T::AccountId, BalanceOf<T>>>;
 
-	/// Where the reward payment should be made. Keyed by stash.
-	#[pallet::storage]
-	#[pallet::getter(fn payee)]
-	pub type Payee<T: Config> =
-		StorageMap<_, Twox64Concat, T::AccountId, RewardDestination<T::AccountId>, ValueQuery>;
-
 	/// The map from (wannabe) validator stash key to the preferences of that validator.
 	///
 	/// When updating this storage item, you must also update the `CounterForValidators`.
 	#[pallet::storage]
 	#[pallet::getter(fn validators)]
 	pub type Validators<T: Config> =
-		StorageMap<_, Twox64Concat, T::AccountId, ValidatorPrefs, ValueQuery>;
+		StorageMap<_, Twox64Concat, T::AccountId, ValidatorPrefs<T::Hash>, ValueQuery>;
+
+	/// The map tracking cmix ids for all (wannabe) validators.
+	#[pallet::storage]
+	#[pallet::getter(fn cmix_ids)]
+	pub type CmixIds<T: Config> =
+		StorageMap<_, Twox64Concat, T::Hash, (), ValueQuery>;
 
 	/// A tracker to keep count of the number of items in the `Validators` map.
 	#[pallet::storage]
@@ -336,7 +348,7 @@ pub mod pallet {
 		EraIndex,
 		Twox64Concat,
 		T::AccountId,
-		ValidatorPrefs,
+		ValidatorPrefs<T::Hash>,
 		ValueQuery,
 	>;
 
@@ -477,7 +489,7 @@ pub mod pallet {
 		pub slash_reward_fraction: Perbill,
 		pub canceled_payout: BalanceOf<T>,
 		pub stakers:
-			Vec<(T::AccountId, T::AccountId, BalanceOf<T>, crate::StakerStatus<T::AccountId>)>,
+			Vec<(T::AccountId, T::AccountId, BalanceOf<T>, crate::StakerStatus<T::Hash, T::AccountId>)>,
 		pub min_nominator_bond: BalanceOf<T>,
 		pub min_validator_bond: BalanceOf<T>,
 	}
@@ -530,12 +542,11 @@ pub mod pallet {
 					T::Origin::from(Some(stash.clone()).into()),
 					T::Lookup::unlookup(controller.clone()),
 					balance,
-					RewardDestination::Staked,
 				));
 				frame_support::assert_ok!(match status {
-					crate::StakerStatus::Validator => <Pallet<T>>::validate(
+					crate::StakerStatus::Validator(prefs) => <Pallet<T>>::validate(
 						T::Origin::from(Some(controller.clone()).into()),
-						Default::default(),
+						prefs.clone(),
 					),
 					crate::StakerStatus::Nominator(votes) => <Pallet<T>>::nominate(
 						T::Origin::from(Some(controller.clone()).into()),
@@ -642,6 +653,8 @@ pub mod pallet {
 		/// There are too many validators in the system. Governance needs to adjust the staking
 		/// settings to keep things safe for the runtime.
 		TooManyValidators,
+		/// CMIX ID already exists
+		ValidatorCmixIdNotUnique,
 	}
 
 	#[pallet::hooks]
@@ -711,7 +724,7 @@ pub mod pallet {
 		/// - O(1).
 		/// - Three extra DB entries.
 		///
-		/// NOTE: Two of the storage writes (`Self::bonded`, `Self::payee`) are _never_ cleaned
+		/// NOTE: One of the storage writes (`Self::bonded`) is _never_ cleaned
 		/// unless the `origin` falls below _existential deposit_ and gets removed as dust.
 		/// ------------------
 		/// # </weight>
@@ -720,7 +733,6 @@ pub mod pallet {
 			origin: OriginFor<T>,
 			controller: <T::Lookup as StaticLookup>::Source,
 			#[pallet::compact] value: BalanceOf<T>,
-			payee: RewardDestination<T::AccountId>,
 		) -> DispatchResult {
 			let stash = ensure_signed(origin)?;
 
@@ -744,7 +756,6 @@ pub mod pallet {
 			// You're auto-bonded forever, here. We might improve this by only bonding when
 			// you actually validate/nominate and remove once you unbond __everything__.
 			<Bonded<T>>::insert(&stash, &controller);
-			<Payee<T>>::insert(&stash, payee);
 
 			let current_era = CurrentEra::<T>::get().unwrap_or(0);
 			let history_depth = Self::history_depth();
@@ -943,7 +954,7 @@ pub mod pallet {
 		///
 		/// The dispatch origin for this call must be _Signed_ by the controller, not the stash.
 		#[pallet::weight(T::WeightInfo::validate())]
-		pub fn validate(origin: OriginFor<T>, prefs: ValidatorPrefs) -> DispatchResult {
+		pub fn validate(origin: OriginFor<T>, prefs: ValidatorPrefs<T::Hash>) -> DispatchResult {
 			let controller = ensure_signed(origin)?;
 
 			let ledger = Self::ledger(&controller).ok_or(Error::<T>::NotController)?;
@@ -960,6 +971,16 @@ pub mod pallet {
 						CounterForValidators::<T>::get() < max_validators,
 						Error::<T>::TooManyValidators
 					);
+				}
+			}
+
+			// Ensure validator cmix id is unique
+			// unless validator exists and cmix id remains the same
+			let existing_prefs = <Validators<T>>::get(stash);
+			let cmix_root = prefs.cmix_root.clone();
+			if existing_prefs.cmix_root != cmix_root {
+				if <CmixIds<T>>::contains_key(&cmix_root) {
+					Err(Error::<T>::ValidatorCmixIdNotUnique)?
 				}
 			}
 
@@ -1053,34 +1074,6 @@ pub mod pallet {
 			Ok(())
 		}
 
-		/// (Re-)set the payment target for a controller.
-		///
-		/// Effects will be felt at the beginning of the next era.
-		///
-		/// The dispatch origin for this call must be _Signed_ by the controller, not the stash.
-		///
-		/// # <weight>
-		/// - Independent of the arguments. Insignificant complexity.
-		/// - Contains a limited number of reads.
-		/// - Writes are limited to the `origin` account key.
-		/// ---------
-		/// - Weight: O(1)
-		/// - DB Weight:
-		///     - Read: Ledger
-		///     - Write: Payee
-		/// # </weight>
-		#[pallet::weight(T::WeightInfo::set_payee())]
-		pub fn set_payee(
-			origin: OriginFor<T>,
-			payee: RewardDestination<T::AccountId>,
-		) -> DispatchResult {
-			let controller = ensure_signed(origin)?;
-			let ledger = Self::ledger(&controller).ok_or(Error::<T>::NotController)?;
-			let stash = &ledger.stash;
-			<Payee<T>>::insert(stash, payee);
-			Ok(())
-		}
-
 		/// (Re-)set the controller of a stash.
 		///
 		/// Effects will be felt at the beginning of the next era.
@@ -1119,7 +1112,7 @@ pub mod pallet {
 
 		/// Sets the ideal number of validators.
 		///
-		/// The dispatch origin must be Root.
+		/// The dispatch origin must be AdminOrigin.
 		///
 		/// # <weight>
 		/// Weight: O(1)
@@ -1130,7 +1123,7 @@ pub mod pallet {
 			origin: OriginFor<T>,
 			#[pallet::compact] new: u32,
 		) -> DispatchResult {
-			ensure_root(origin)?;
+			Self::ensure_admin(origin)?;
 			ValidatorCount::<T>::put(new);
 			Ok(())
 		}
@@ -1236,7 +1229,7 @@ pub mod pallet {
 		/// # <weight>
 		/// O(S) where S is the number of slashing spans to be removed
 		/// Reads: Bonded, Slashing Spans, Account, Locks
-		/// Writes: Bonded, Slashing Spans (if S > 0), Ledger, Payee, Validators, Nominators,
+		/// Writes: Bonded, Slashing Spans (if S > 0), Ledger, Validators, Nominators,
 		/// Account, Locks Writes Each: SpanSlash * S
 		/// # </weight>
 		#[pallet::weight(T::WeightInfo::force_unstake(*num_slashing_spans))]
@@ -1327,12 +1320,7 @@ pub mod pallet {
 		/// - Contains a limited number of reads and writes.
 		/// -----------
 		/// N is the Number of payouts for the validator (including the validator)
-		/// Weight:
-		/// - Reward Destination Staked: O(N)
-		/// - Reward Destination Controller (Creating): O(N)
-		///
-		///   NOTE: weights are assuming that payouts are made to alive stash account (Staked).
-		///   Paying even a dead controller is cheaper weight-wise. We don't do any refunds here.
+		/// Weight: O(N)
 		/// # </weight>
 		#[pallet::weight(T::WeightInfo::payout_stakers_alive_staked(
 			T::MaxNominatorRewardedPerValidator::get()
@@ -1437,7 +1425,7 @@ pub mod pallet {
 		/// Complexity: O(S) where S is the number of slashing spans on the account.
 		/// DB Weight:
 		/// - Reads: Stash Account, Bonded, Slashing Spans, Locks
-		/// - Writes: Bonded, Slashing Spans (if S > 0), Ledger, Payee, Validators, Nominators,
+		/// - Writes: Bonded, Slashing Spans (if S > 0), Ledger, Validators, Nominators,
 		///   Stash Account, Locks
 		/// - Writes Each: SpanSlash * S
 		/// # </weight>
@@ -1505,7 +1493,7 @@ pub mod pallet {
 		/// * `max_validator_count`: The max number of users who can be a validator at once. When
 		///   set to `None`, no limit is enforced.
 		///
-		/// Origin must be Root to call this function.
+		/// Origin must be AdminOrigin to call this function.
 		///
 		/// NOTE: Existing nominators and validators will not be affected by this update.
 		/// to kick people under the new limits, `chill_other` should be called.
@@ -1518,7 +1506,7 @@ pub mod pallet {
 			max_validator_count: Option<u32>,
 			threshold: Option<Percent>,
 		) -> DispatchResult {
-			ensure_root(origin)?;
+			Self::ensure_admin(origin)?;
 			MinNominatorBond::<T>::set(min_nominator_bond);
 			MinValidatorBond::<T>::set(min_validator_bond);
 			MaxNominatorsCount::<T>::set(max_nominator_count);

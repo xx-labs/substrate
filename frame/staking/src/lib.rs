@@ -200,8 +200,7 @@
 //! Validators and nominators are rewarded at the end of each era. The total reward of an era is
 //! calculated using the era duration and the staking rate (the total amount of tokens staked by
 //! nominators and validators, divided by the total token supply). It aims to incentivize toward a
-//! defined staking rate. The full specification can be found
-//! [here](https://research.web3.foundation/en/latest/polkadot/Token%20Economics.html#inflation-model).
+//! defined staking rate.
 //!
 //! Total reward is split among validators and their nominators depending on the number of points
 //! they received during the era. Points are added to a validator using
@@ -209,7 +208,7 @@
 //!
 //! [`Pallet`] implements
 //! [`pallet_authorship::EventHandler`] to add reward
-//! points to block producer and block producer of referenced uncles.
+//! points to block producers.
 //!
 //! The validator and its nominator split their reward as following:
 //!
@@ -224,13 +223,8 @@
 //! [`others`](Exposure::others) by
 //! [`total`](Exposure::total) in [`Exposure`]).
 //!
-//! All entities who receive a reward have the option to choose their reward destination through the
-//! [`Payee`] storage item (see
-//! [`set_payee`](Call::set_payee)), to be one of the following:
+//! Staking rewards are paid automatically to the stash account, increasing the amount at stake.
 //!
-//! - Controller account, (obviously) not increasing the staked value.
-//! - Stash account, not increasing the staked value.
-//! - Stash account, also increasing the staked value.
 //!
 //! ### Additional Fund Management Operations
 //!
@@ -367,39 +361,19 @@ pub struct EraRewardPoints<AccountId: Ord> {
 /// Indicates the initial status of the staker.
 #[derive(RuntimeDebug, TypeInfo)]
 #[cfg_attr(feature = "std", derive(serde::Serialize, serde::Deserialize))]
-pub enum StakerStatus<AccountId> {
+pub enum StakerStatus<Hash, AccountId> {
 	/// Chilling.
 	Idle,
 	/// Declared desire in validating or already participating in it.
-	Validator,
+	Validator(ValidatorPrefs<Hash>),
 	/// Nominating for a group of other stakers.
 	Nominator(Vec<AccountId>),
 }
 
-/// A destination account for payment.
-#[derive(PartialEq, Eq, Copy, Clone, Encode, Decode, RuntimeDebug, TypeInfo)]
-pub enum RewardDestination<AccountId> {
-	/// Pay into the stash account, increasing the amount at stake accordingly.
-	Staked,
-	/// Pay into the stash account, not increasing the amount at stake.
-	Stash,
-	/// Pay into the controller account.
-	Controller,
-	/// Pay into a specified account.
-	Account(AccountId),
-	/// Receive no reward.
-	None,
-}
-
-impl<AccountId> Default for RewardDestination<AccountId> {
-	fn default() -> Self {
-		RewardDestination::Staked
-	}
-}
-
 /// Preference of what happens regarding validation.
 #[derive(PartialEq, Eq, Clone, Encode, Decode, RuntimeDebug, TypeInfo)]
-pub struct ValidatorPrefs {
+#[cfg_attr(feature = "std", derive(serde::Serialize, serde::Deserialize))]
+pub struct ValidatorPrefs<Hash> {
 	/// Reward that validator takes up-front; only the rest is split between themselves and
 	/// nominators.
 	#[codec(compact)]
@@ -408,11 +382,17 @@ pub struct ValidatorPrefs {
 	/// who is not already nominating this validator may nominate them. By default, validators
 	/// are accepting nominations.
 	pub blocked: bool,
+	/// Validator's CMIX node identity merkle root
+	pub cmix_root: Hash,
 }
 
-impl Default for ValidatorPrefs {
+impl<Hash: AsMut<[u8]> + Default> Default for ValidatorPrefs<Hash> {
 	fn default() -> Self {
-		ValidatorPrefs { commission: Default::default(), blocked: false }
+		ValidatorPrefs {
+			commission: Default::default(),
+			blocked: false,
+			cmix_root: Hash::default(),
+		}
 	}
 }
 
@@ -676,6 +656,16 @@ impl<Balance: Default> EraPayout<Balance> for () {
 	) -> (Balance, Balance) {
 		(Default::default(), Default::default())
 	}
+}
+
+pub trait CmixHandler {
+	fn get_block_points() -> u32;
+	fn end_era();
+}
+
+pub trait CustodyHandler<AccountId, Balance> {
+	fn is_custody_account(who: &AccountId) -> bool;
+	fn total_custody() -> Balance;
 }
 
 /// Adaptor to turn a `PiecewiseLinear` curve definition into an `EraPayout` impl, used for
