@@ -34,7 +34,7 @@ use sp_runtime::{
 	traits::{IdentityLookup, Zero},
 };
 use sp_staking::offence::{OffenceDetails, OnOffenceHandler};
-use std::cell::RefCell;
+use std::{cell::RefCell, collections::HashSet};
 
 pub const INIT_TIMESTAMP: u64 = 30_000;
 pub const BLOCK_TIME: u64 = 1000;
@@ -232,6 +232,57 @@ impl OnUnbalanced<NegativeImbalanceOf<Test>> for RewardRemainderMock {
 	}
 }
 
+thread_local! {
+    static CUSTODY_ACCOUNTS: RefCell<HashSet<AccountId>> = RefCell::new(Default::default());
+    static XX_BLOCK_POINTS: RefCell<u32> = RefCell::new(20); // default block reward is 20. This is to stop existing tests from breaking
+    static REWARD_DEDUCTIONS: RefCell<Balance> = RefCell::new(Default::default());
+}
+
+
+pub struct CustodyHandlerMock;
+
+impl CustodyHandler<AccountId, Balance> for CustodyHandlerMock {
+	fn is_custody_account(account: &AccountId) -> bool {
+		CUSTODY_ACCOUNTS.with(|accounts| {
+			accounts.borrow().contains(account)
+		})
+	}
+
+	fn total_custody() -> Balance {
+		Balance::zero() // This isn't used by the staking pallet
+	}
+}
+
+
+pub struct CmixHandlerMock;
+
+impl CmixHandler for CmixHandlerMock {
+	fn get_block_points() -> u32 {
+		XX_BLOCK_POINTS.with(|x| {
+			x.borrow().clone()
+		})
+	}
+	fn end_era() {} // do nothing
+}
+
+pub struct RewardMock;
+
+impl OnUnbalanced<PositiveImbalanceOf<Test>> for RewardMock {
+	fn on_nonzero_unbalanced(amount: PositiveImbalanceOf<Test>) {
+		REWARD_DEDUCTIONS.with(|v| {
+			*v.borrow_mut() += amount.peek();
+		});
+	}
+}
+
+impl RewardMock{
+	pub fn total() -> BalanceOf<Test> {
+		REWARD_DEDUCTIONS.with(|v| {
+			*v.borrow()
+		})
+	}
+}
+
 const THRESHOLDS: [sp_npos_elections::VoteWeight; 9] =
 	[10, 20, 30, 40, 50, 60, 1_000, 2_000, 10_000];
 
@@ -252,28 +303,31 @@ impl onchain::Config for Test {
 }
 
 impl crate::pallet::pallet::Config for Test {
-	const MAX_NOMINATIONS: u32 = 16;
 	type Currency = Balances;
 	type UnixTime = Timestamp;
 	type CurrencyToVote = frame_support::traits::SaturatingCurrencyToVote;
+	type ElectionProvider = onchain::OnChainSequentialPhragmen<Self>;
+	type GenesisElectionProvider = Self::ElectionProvider;
+	type CmixHandler = CmixHandlerMock;
+	type CustodyHandler = CustodyHandlerMock;
+	type AdminOrigin = frame_system::EnsureRoot<Self::AccountId>;
+	const MAX_NOMINATIONS: u32 = 16;
 	type RewardRemainder = RewardRemainderMock;
 	type Event = Event;
 	type Slash = ();
-	type Reward = ();
+	type Reward = RewardMock;
 	type SessionsPerEra = SessionsPerEra;
+	type BondingDuration = BondingDuration;
 	type SlashDeferDuration = SlashDeferDuration;
 	type SlashCancelOrigin = frame_system::EnsureRoot<Self::AccountId>;
-	type BondingDuration = BondingDuration;
 	type SessionInterface = Self;
 	type EraPayout = ConvertCurve<RewardCurve>;
 	type NextNewSession = Session;
 	type MaxNominatorRewardedPerValidator = MaxNominatorRewardedPerValidator;
 	type OffendingValidatorsThreshold = OffendingValidatorsThreshold;
-	type ElectionProvider = onchain::OnChainSequentialPhragmen<Self>;
-	type GenesisElectionProvider = Self::ElectionProvider;
-	type WeightInfo = ();
 	// NOTE: consider a macro and use `UseNominatorsMap<Self>` as well.
 	type SortedListProvider = BagsList;
+	type WeightInfo = ();
 }
 
 impl<LocalCall> frame_system::offchain::SendTransactionTypes<LocalCall> for Test
@@ -285,6 +339,7 @@ where
 }
 
 pub type Extrinsic = TestXt<Call, ()>;
+pub type CmixId = <Test as frame_system::Config>::Hash;
 pub(crate) type StakingCall = crate::Call<Test>;
 pub(crate) type TestRuntimeCall = <Test as frame_system::Config>::Call;
 
@@ -298,9 +353,9 @@ pub struct ExtBuilder {
 	min_nominator_bond: Balance,
 	min_validator_bond: Balance,
 	balance_factor: Balance,
-	status: BTreeMap<AccountId, StakerStatus<AccountId>>,
+	status: BTreeMap<AccountId, StakerStatus<CmixId, AccountId>>,
 	stakes: BTreeMap<AccountId, Balance>,
-	stakers: Vec<(AccountId, AccountId, Balance, StakerStatus<AccountId>)>,
+	stakers: Vec<(AccountId, AccountId, Balance, StakerStatus<CmixId, AccountId>)>,
 }
 
 impl Default for ExtBuilder {
@@ -320,6 +375,10 @@ impl Default for ExtBuilder {
 			stakers: Default::default(),
 		}
 	}
+}
+
+pub fn cmix_id(byte: u8) -> Option<CmixId> {
+	Some(CmixId::repeat_byte(byte))
 }
 
 impl ExtBuilder {
@@ -375,7 +434,7 @@ impl ExtBuilder {
 		self.min_validator_bond = amount;
 		self
 	}
-	pub fn set_status(mut self, who: AccountId, status: StakerStatus<AccountId>) -> Self {
+	pub fn set_status(mut self, who: AccountId, status: StakerStatus<CmixId, AccountId>) -> Self {
 		self.status.insert(who, status);
 		self
 	}
@@ -388,13 +447,21 @@ impl ExtBuilder {
 		stash: AccountId,
 		ctrl: AccountId,
 		stake: Balance,
-		status: StakerStatus<AccountId>,
+		status: StakerStatus<CmixId, AccountId>,
 	) -> Self {
 		self.stakers.push((stash, ctrl, stake, status));
 		self
 	}
 	pub fn balance_factor(mut self, factor: Balance) -> Self {
 		self.balance_factor = factor;
+		self
+	}
+	pub fn custody_accounts(self, accounts: &[AccountId]) -> Self {
+		CUSTODY_ACCOUNTS.with(|set| set.borrow_mut().extend(accounts.iter()));
+		self
+	}
+	pub fn block_points(self, points: u32) -> Self {
+		XX_BLOCK_POINTS.with(|v| *v.borrow_mut() = points);
 		self
 	}
 	fn build(self) -> sp_io::TestExternalities {
@@ -440,12 +507,15 @@ impl ExtBuilder {
 			stakers = vec![
 				// (stash, ctrl, stake, status)
 				// these two will be elected in the default test where we elect 2.
-				(11, 10, self.balance_factor * 1000, StakerStatus::<AccountId>::Validator),
-				(21, 20, self.balance_factor * 1000, StakerStatus::<AccountId>::Validator),
+				(11, 10, self.balance_factor * 1000,
+				 StakerStatus::<CmixId, AccountId>::Validator(cmix_id(11u8))),
+				(21, 20, self.balance_factor * 1000,
+				 StakerStatus::<CmixId, AccountId>::Validator(cmix_id(21u8))),
 				// a loser validator
-				(31, 30, self.balance_factor * 500, StakerStatus::<AccountId>::Validator),
+				(31, 30, self.balance_factor * 500,
+				 StakerStatus::<CmixId, AccountId>::Validator(cmix_id(31u8))),
 				// an idle validator
-				(41, 40, self.balance_factor * 1000, StakerStatus::<AccountId>::Idle),
+				(41, 40, self.balance_factor * 1000, StakerStatus::<CmixId, AccountId>::Idle),
 			];
 			// optionally add a nominator
 			if self.nominate {
@@ -453,7 +523,7 @@ impl ExtBuilder {
 					101,
 					100,
 					self.balance_factor * 500,
-					StakerStatus::<AccountId>::Nominator(vec![11, 21]),
+					StakerStatus::<CmixId, AccountId>::Nominator(vec![11, 21]),
 				))
 			}
 			// replace any of the status if needed.
@@ -632,14 +702,14 @@ pub(crate) fn current_era() -> EraIndex {
 	Staking::current_era().unwrap()
 }
 
-pub(crate) fn bond(stash: AccountId, ctrl: AccountId, val: Balance) {
+pub(crate) fn bond(stash: AccountId, ctrl: AccountId, val: Balance, cmix_id: Option<CmixId>) {
 	let _ = Balances::make_free_balance_be(&stash, val);
 	let _ = Balances::make_free_balance_be(&ctrl, val);
-	assert_ok!(Staking::bond(Origin::signed(stash), ctrl, val, RewardDestination::Controller));
+	assert_ok!(Staking::bond(Origin::signed(stash), ctrl, val, cmix_id));
 }
 
-pub(crate) fn bond_validator(stash: AccountId, ctrl: AccountId, val: Balance) {
-	bond(stash, ctrl, val);
+pub(crate) fn bond_validator(stash: AccountId, ctrl: AccountId, val: Balance, cmix_id: Option<CmixId>) {
+	bond(stash, ctrl, val, cmix_id);
 	assert_ok!(Staking::validate(Origin::signed(ctrl), ValidatorPrefs::default()));
 }
 
@@ -649,7 +719,7 @@ pub(crate) fn bond_nominator(
 	val: Balance,
 	target: Vec<AccountId>,
 ) {
-	bond(stash, ctrl, val);
+	bond(stash, ctrl, val, None);
 	assert_ok!(Staking::nominate(Origin::signed(ctrl), target));
 }
 

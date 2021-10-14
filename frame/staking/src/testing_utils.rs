@@ -29,7 +29,7 @@ use sp_io::hashing::blake2_256;
 
 use frame_election_provider_support::SortedListProvider;
 use frame_support::{pallet_prelude::*, traits::Currency};
-use sp_runtime::{traits::StaticLookup, Perbill};
+use sp_runtime::{traits::{StaticLookup, Hash}, Perbill};
 use sp_std::prelude::*;
 
 const SEED: u32 = 0;
@@ -72,7 +72,7 @@ pub fn create_funded_user_with_balance<T: Config>(
 pub fn create_stash_controller<T: Config>(
 	n: u32,
 	balance_factor: u32,
-	destination: RewardDestination<T::AccountId>,
+	cmix_id: Option<T::Hash>,
 ) -> Result<(T::AccountId, T::AccountId), &'static str> {
 	let stash = create_funded_user::<T>("stash", n, balance_factor);
 	let controller = create_funded_user::<T>("controller", n, balance_factor);
@@ -83,7 +83,7 @@ pub fn create_stash_controller<T: Config>(
 		RawOrigin::Signed(stash.clone()).into(),
 		controller_lookup,
 		amount,
-		destination,
+		cmix_id,
 	)?;
 	return Ok((stash, controller))
 }
@@ -92,7 +92,7 @@ pub fn create_stash_controller<T: Config>(
 pub fn create_stash_controller_with_balance<T: Config>(
 	n: u32,
 	balance: crate::BalanceOf<T>,
-	destination: RewardDestination<T::AccountId>,
+	cmix_id: Option<T::Hash>,
 ) -> Result<(T::AccountId, T::AccountId), &'static str> {
 	let stash = create_funded_user_with_balance::<T>("stash", n, balance);
 	let controller = create_funded_user_with_balance::<T>("controller", n, balance);
@@ -103,31 +103,9 @@ pub fn create_stash_controller_with_balance<T: Config>(
 		RawOrigin::Signed(stash.clone()).into(),
 		controller_lookup,
 		balance,
-		destination,
+		cmix_id,
 	)?;
 	Ok((stash, controller))
-}
-
-/// Create a stash and controller pair, where the controller is dead, and payouts go to controller.
-/// This is used to test worst case payout scenarios.
-pub fn create_stash_and_dead_controller<T: Config>(
-	n: u32,
-	balance_factor: u32,
-	destination: RewardDestination<T::AccountId>,
-) -> Result<(T::AccountId, T::AccountId), &'static str> {
-	let stash = create_funded_user::<T>("stash", n, balance_factor);
-	// controller has no funds
-	let controller = create_funded_user::<T>("controller", n, 0);
-	let controller_lookup: <T::Lookup as StaticLookup>::Source =
-		T::Lookup::unlookup(controller.clone());
-	let amount = T::Currency::minimum_balance() * (balance_factor / 10).max(1).into();
-	Staking::<T>::bond(
-		RawOrigin::Signed(stash.clone()).into(),
-		controller_lookup,
-		amount,
-		destination,
-	)?;
-	return Ok((stash, controller))
 }
 
 /// create `max` validators.
@@ -146,8 +124,9 @@ pub fn create_validators_with_seed<T: Config>(
 ) -> Result<Vec<<T::Lookup as StaticLookup>::Source>, &'static str> {
 	let mut validators: Vec<<T::Lookup as StaticLookup>::Source> = Vec::with_capacity(max as usize);
 	for i in 0..max {
+		let cmix_id = T::Hashing::hash(&mut i.to_be_bytes());
 		let (stash, controller) =
-			create_stash_controller::<T>(i + seed, balance_factor, RewardDestination::Staked)?;
+			create_stash_controller::<T>(i + seed, balance_factor, Some(cmix_id))?;
 		let validator_prefs =
 			ValidatorPrefs { commission: Perbill::from_percent(50), ..Default::default() };
 		Staking::<T>::validate(RawOrigin::Signed(controller).into(), validator_prefs)?;
@@ -188,8 +167,9 @@ pub fn create_validators_with_nominators_for_era<T: Config>(
 	// Create validators
 	for i in 0..validators {
 		let balance_factor = if randomize_stake { rng.next_u32() % 255 + 10 } else { 100u32 };
+		let cmix_id = T::Hashing::hash(&mut i.to_be_bytes());
 		let (v_stash, v_controller) =
-			create_stash_controller::<T>(i, balance_factor, RewardDestination::Staked)?;
+			create_stash_controller::<T>(i, balance_factor, Some(cmix_id))?;
 		let validator_prefs =
 			ValidatorPrefs { commission: Perbill::from_percent(50), ..Default::default() };
 		Staking::<T>::validate(RawOrigin::Signed(v_controller.clone()).into(), validator_prefs)?;
@@ -205,7 +185,7 @@ pub fn create_validators_with_nominators_for_era<T: Config>(
 	for j in 0..nominators {
 		let balance_factor = if randomize_stake { rng.next_u32() % 255 + 10 } else { 100u32 };
 		let (_n_stash, n_controller) =
-			create_stash_controller::<T>(u32::MAX - j, balance_factor, RewardDestination::Staked)?;
+			create_stash_controller::<T>(u32::MAX - j, balance_factor, None)?;
 
 		// Have them randomly validate
 		let mut available_validators = validator_chosen.clone();

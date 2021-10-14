@@ -70,15 +70,13 @@ fn add_slashing_spans<T: Config>(who: &T::AccountId, spans: u32) {
 pub fn create_validator_with_nominators<T: Config>(
 	n: u32,
 	upper_bound: u32,
-	dead: bool,
-	destination: RewardDestination<T::AccountId>,
 ) -> Result<(T::AccountId, Vec<(T::AccountId, T::AccountId)>), &'static str> {
 	// Clean up any existing state.
 	clear_validators_and_nominators::<T>();
 	let mut points_total = 0;
 	let mut points_individual = Vec::new();
 
-	let (v_stash, v_controller) = create_stash_controller::<T>(0, 100, destination.clone())?;
+	let (v_stash, v_controller) = create_stash_controller::<T>(0, 100, Some(Default::default()))?;
 	let validator_prefs =
 		ValidatorPrefs { commission: Perbill::from_percent(50), ..Default::default() };
 	Staking::<T>::validate(RawOrigin::Signed(v_controller).into(), validator_prefs)?;
@@ -91,11 +89,7 @@ pub fn create_validator_with_nominators<T: Config>(
 
 	// Give the validator n nominators, but keep total users in the system the same.
 	for i in 0..upper_bound {
-		let (n_stash, n_controller) = if !dead {
-			create_stash_controller::<T>(u32::MAX - i, 100, destination.clone())?
-		} else {
-			create_stash_and_dead_controller::<T>(u32::MAX - i, 100, destination.clone())?
-		};
+		let (n_stash, n_controller) = create_stash_controller::<T>(u32::max_value() - i, 100, None)?;
 		if i < n {
 			Staking::<T>::nominate(
 				RawOrigin::Signed(n_controller.clone()).into(),
@@ -168,7 +162,7 @@ impl<T: Config> ListScenario<T> {
 		let (origin_stash1, origin_controller1) = create_stash_controller_with_balance::<T>(
 			USER_SEED + 2,
 			origin_weight,
-			Default::default(),
+			None,
 		)?;
 		Staking::<T>::nominate(
 			RawOrigin::Signed(origin_controller1.clone()).into(),
@@ -179,7 +173,7 @@ impl<T: Config> ListScenario<T> {
 		let (_origin_stash2, origin_controller2) = create_stash_controller_with_balance::<T>(
 			USER_SEED + 3,
 			origin_weight,
-			Default::default(),
+			None,
 		)?;
 		Staking::<T>::nominate(
 			RawOrigin::Signed(origin_controller2.clone()).into(),
@@ -199,7 +193,7 @@ impl<T: Config> ListScenario<T> {
 		let (_dest_stash1, dest_controller1) = create_stash_controller_with_balance::<T>(
 			USER_SEED + 1,
 			dest_weight,
-			Default::default(),
+			None,
 		)?;
 		Staking::<T>::nominate(
 			RawOrigin::Signed(dest_controller1).into(),
@@ -936,8 +930,6 @@ mod tests {
 			let (validator_stash, nominators) = create_validator_with_nominators::<Test>(
 				n,
 				<Test as Config>::MaxNominatorRewardedPerValidator::get() as u32,
-				false,
-				RewardDestination::Staked,
 			)
 			.unwrap();
 
@@ -961,8 +953,6 @@ mod tests {
 			let (validator_stash, _nominators) = create_validator_with_nominators::<Test>(
 				n,
 				<Test as Config>::MaxNominatorRewardedPerValidator::get() as u32,
-				false,
-				RewardDestination::Staked,
 			)
 			.unwrap();
 
