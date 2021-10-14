@@ -660,6 +660,8 @@ pub mod pallet {
 		TooManyValidators,
 		/// CMIX ID already exists
 		ValidatorCmixIdNotUnique,
+		/// Validator must have a CMIX ID
+		ValidatorMustHaveCmixId,
 	}
 
 	#[pallet::hooks]
@@ -976,6 +978,8 @@ pub mod pallet {
 
 			let ledger = Self::ledger(&controller).ok_or(Error::<T>::NotController)?;
 			ensure!(ledger.active >= MinValidatorBond::<T>::get(), Error::<T>::InsufficientBond);
+			// Require validators to have set a cmix ID
+			ensure!(ledger.cmix_id.is_some(), Error::<T>::ValidatorMustHaveCmixId);
 			let stash = &ledger.stash;
 
 			// Only check limits if they are not already a validator.
