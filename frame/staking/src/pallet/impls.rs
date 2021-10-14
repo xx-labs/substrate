@@ -206,7 +206,7 @@ impl<T: Config> Pallet<T> {
 	/// This will also update the stash lock.
 	pub(crate) fn update_ledger(
 		controller: &T::AccountId,
-		ledger: &StakingLedger<T::AccountId, BalanceOf<T>>,
+		ledger: &StakingLedger<T::AccountId, BalanceOf<T>, T::Hash>,
 	) {
 		T::Currency::set_lock(STAKING_ID, &ledger.stash, ledger.total, WithdrawReasons::all());
 		<Ledger<T>>::insert(controller, ledger);
@@ -566,7 +566,11 @@ impl<T: Config> Pallet<T> {
 		slashing::clear_stash_metadata::<T>(stash, num_slashing_spans)?;
 
 		<Bonded<T>>::remove(stash);
-		<Ledger<T>>::remove(&controller);
+		let ledger = <Ledger<T>>::take(&controller).unwrap();
+
+		if let Some(id) = ledger.cmix_id {
+			<CmixIds<T>>::remove(&id);
+		}
 
 		Self::do_remove_validator(stash);
 		Self::do_remove_nominator(stash);
@@ -844,16 +848,10 @@ impl<T: Config> Pallet<T> {
 	/// NOTE: you must ALWAYS use this function to add a validator to the system. Any access to
 	/// `Validators`, its counter, or `VoterList` outside of this function is almost certainly
 	/// wrong.
-	pub fn do_add_validator(who: &T::AccountId, prefs: ValidatorPrefs<T::Hash>) {
+	pub fn do_add_validator(who: &T::AccountId, prefs: ValidatorPrefs) {
 		if !Validators::<T>::contains_key(who) {
-			CounterForValidators::<T>::mutate(|x| x.saturating_inc());
-		} else {
-			// Clear current cmix id
-			let exist_prefs = <Validators<T>>::get(who);
-			<CmixIds<T>>::remove(&exist_prefs.cmix_root);
+			CounterForValidators::<T>::mutate(|x| x.saturating_inc())
 		}
-		// Insert cmix id
-		<CmixIds<T>>::insert(&prefs.cmix_root.clone(), ());
 		Validators::<T>::insert(who, prefs);
 	}
 
@@ -867,8 +865,7 @@ impl<T: Config> Pallet<T> {
 	/// wrong.
 	pub fn do_remove_validator(who: &T::AccountId) -> bool {
 		if Validators::<T>::contains_key(who) {
-			let prefs = <Validators<T>>::take(who);
-			<CmixIds<T>>::remove(&prefs.cmix_root);
+			Validators::<T>::remove(who);
 			CounterForValidators::<T>::mutate(|x| x.saturating_dec());
 			true
 		} else {
@@ -980,6 +977,7 @@ impl<T: Config> ElectionDataProvider<T::AccountId, BlockNumberFor<T>> for Pallet
 				total: stake,
 				unlocking: vec![],
 				claimed_rewards: vec![],
+				cmix_id: None,
 			},
 		);
 		Self::do_add_nominator(&voter, Nominations { targets, submitted_in: 0, suppressed: false });
@@ -997,11 +995,12 @@ impl<T: Config> ElectionDataProvider<T::AccountId, BlockNumberFor<T>> for Pallet
 				total: stake,
 				unlocking: vec![],
 				claimed_rewards: vec![],
+				cmix_id: None,
 			},
 		);
 		Self::do_add_validator(
 			&target,
-			ValidatorPrefs { commission: Perbill::zero(), blocked: false, cmix_root: T::Hash::default() },
+			ValidatorPrefs { commission: Perbill::zero(), blocked: false },
 		);
 	}
 
@@ -1036,11 +1035,12 @@ impl<T: Config> ElectionDataProvider<T::AccountId, BlockNumberFor<T>> for Pallet
 					total: stake,
 					unlocking: vec![],
 					claimed_rewards: vec![],
+					cmix_id: None,
 				},
 			);
 			Self::do_add_validator(
 				&v,
-				ValidatorPrefs { commission: Perbill::zero(), blocked: false, cmix_root: T::Hash::default() },
+				ValidatorPrefs { commission: Perbill::zero(), blocked: false },
 			);
 		});
 
@@ -1057,6 +1057,7 @@ impl<T: Config> ElectionDataProvider<T::AccountId, BlockNumberFor<T>> for Pallet
 					total: stake,
 					unlocking: vec![],
 					claimed_rewards: vec![],
+					cmix_id: None,
 				},
 			);
 			Self::do_add_nominator(

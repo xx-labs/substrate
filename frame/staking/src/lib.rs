@@ -365,15 +365,14 @@ pub enum StakerStatus<Hash, AccountId> {
 	/// Chilling.
 	Idle,
 	/// Declared desire in validating or already participating in it.
-	Validator(ValidatorPrefs<Hash>),
+	Validator(Option<Hash>),
 	/// Nominating for a group of other stakers.
 	Nominator(Vec<AccountId>),
 }
 
 /// Preference of what happens regarding validation.
 #[derive(PartialEq, Eq, Clone, Encode, Decode, RuntimeDebug, TypeInfo)]
-#[cfg_attr(feature = "std", derive(serde::Serialize, serde::Deserialize))]
-pub struct ValidatorPrefs<Hash> {
+pub struct ValidatorPrefs {
 	/// Reward that validator takes up-front; only the rest is split between themselves and
 	/// nominators.
 	#[codec(compact)]
@@ -382,17 +381,11 @@ pub struct ValidatorPrefs<Hash> {
 	/// who is not already nominating this validator may nominate them. By default, validators
 	/// are accepting nominations.
 	pub blocked: bool,
-	/// Validator's CMIX node identity merkle root
-	pub cmix_root: Hash,
 }
 
-impl<Hash: AsMut<[u8]> + Default> Default for ValidatorPrefs<Hash> {
+impl Default for ValidatorPrefs {
 	fn default() -> Self {
-		ValidatorPrefs {
-			commission: Default::default(),
-			blocked: false,
-			cmix_root: Hash::default(),
-		}
+		ValidatorPrefs { commission: Default::default(), blocked: false }
 	}
 }
 
@@ -410,7 +403,7 @@ pub struct UnlockChunk<Balance: HasCompact> {
 /// The ledger of a (bonded) stash.
 #[cfg_attr(feature = "runtime-benchmarks", derive(Default))]
 #[derive(PartialEq, Eq, Clone, Encode, Decode, RuntimeDebug, TypeInfo)]
-pub struct StakingLedger<AccountId, Balance: HasCompact> {
+pub struct StakingLedger<AccountId, Balance: HasCompact, Hash> {
 	/// The stash account whose balance is actually locked and at stake.
 	pub stash: AccountId,
 	/// The total amount of the stash's balance that we are currently accounting for.
@@ -427,10 +420,12 @@ pub struct StakingLedger<AccountId, Balance: HasCompact> {
 	/// List of eras for which the stakers behind a validator have claimed rewards. Only updated
 	/// for validators.
 	pub claimed_rewards: Vec<EraIndex>,
+	/// Validator's CMIX node identity
+	pub cmix_id: Option<Hash>,
 }
 
-impl<AccountId, Balance: HasCompact + Copy + Saturating + AtLeast32BitUnsigned>
-	StakingLedger<AccountId, Balance>
+impl<AccountId, Balance: HasCompact + Copy + Saturating + AtLeast32BitUnsigned, Hash>
+	StakingLedger<AccountId, Balance, Hash>
 {
 	/// Remove entries from `unlocking` that are sufficiently old and reduce the
 	/// total by the sum of their balances.
@@ -455,6 +450,7 @@ impl<AccountId, Balance: HasCompact + Copy + Saturating + AtLeast32BitUnsigned>
 			active: self.active,
 			unlocking,
 			claimed_rewards: self.claimed_rewards,
+			cmix_id: self.cmix_id,
 		}
 	}
 
@@ -486,7 +482,7 @@ impl<AccountId, Balance: HasCompact + Copy + Saturating + AtLeast32BitUnsigned>
 	}
 }
 
-impl<AccountId, Balance> StakingLedger<AccountId, Balance>
+impl<AccountId, Balance, Hash> StakingLedger<AccountId, Balance, Hash>
 where
 	Balance: AtLeast32BitUnsigned + Saturating + Copy,
 {

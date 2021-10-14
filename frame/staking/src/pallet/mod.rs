@@ -225,7 +225,7 @@ pub mod pallet {
 	#[pallet::storage]
 	#[pallet::getter(fn ledger)]
 	pub type Ledger<T: Config> =
-		StorageMap<_, Blake2_128Concat, T::AccountId, StakingLedger<T::AccountId, BalanceOf<T>>>;
+		StorageMap<_, Blake2_128Concat, T::AccountId, StakingLedger<T::AccountId, BalanceOf<T>, T::Hash>>;
 
 	/// The map from (wannabe) validator stash key to the preferences of that validator.
 	///
@@ -233,7 +233,7 @@ pub mod pallet {
 	#[pallet::storage]
 	#[pallet::getter(fn validators)]
 	pub type Validators<T: Config> =
-		StorageMap<_, Twox64Concat, T::AccountId, ValidatorPrefs<T::Hash>, ValueQuery>;
+		StorageMap<_, Twox64Concat, T::AccountId, ValidatorPrefs, ValueQuery>;
 
 	/// The map tracking cmix ids for all (wannabe) validators.
 	#[pallet::storage]
@@ -348,7 +348,7 @@ pub mod pallet {
 		EraIndex,
 		Twox64Concat,
 		T::AccountId,
-		ValidatorPrefs<T::Hash>,
+		ValidatorPrefs,
 		ValueQuery,
 	>;
 
@@ -538,15 +538,20 @@ pub mod pallet {
 					T::Currency::free_balance(&stash) >= balance,
 					"Stash does not have enough balance to bond."
 				);
+				let cmix_id = match status {
+					crate::StakerStatus::Validator(id) => *id,
+					_ => None,
+				};
 				frame_support::assert_ok!(<Pallet<T>>::bond(
 					T::Origin::from(Some(stash.clone()).into()),
 					T::Lookup::unlookup(controller.clone()),
 					balance,
+					cmix_id,
 				));
 				frame_support::assert_ok!(match status {
-					crate::StakerStatus::Validator(prefs) => <Pallet<T>>::validate(
+					crate::StakerStatus::Validator(_) => <Pallet<T>>::validate(
 						T::Origin::from(Some(controller.clone()).into()),
-						prefs.clone(),
+						Default::default(),
 					),
 					crate::StakerStatus::Nominator(votes) => <Pallet<T>>::nominate(
 						T::Origin::from(Some(controller.clone()).into()),
@@ -733,6 +738,7 @@ pub mod pallet {
 			origin: OriginFor<T>,
 			controller: <T::Lookup as StaticLookup>::Source,
 			#[pallet::compact] value: BalanceOf<T>,
+			cmix_id: Option<T::Hash>,
 		) -> DispatchResult {
 			let stash = ensure_signed(origin)?;
 
@@ -751,11 +757,21 @@ pub mod pallet {
 				Err(Error::<T>::InsufficientBond)?
 			}
 
+			// Ensure validator cmix id is unique
+			if let Some(id) = cmix_id.clone() {
+				if <CmixIds<T>>::contains_key(&id) {
+					Err(Error::<T>::ValidatorCmixIdNotUnique)?
+				}
+			}
+
 			frame_system::Pallet::<T>::inc_consumers(&stash).map_err(|_| Error::<T>::BadState)?;
 
 			// You're auto-bonded forever, here. We might improve this by only bonding when
 			// you actually validate/nominate and remove once you unbond __everything__.
 			<Bonded<T>>::insert(&stash, &controller);
+			if let Some(id) = cmix_id.clone() {
+				<CmixIds<T>>::insert(&id, ())
+			}
 
 			let current_era = CurrentEra::<T>::get().unwrap_or(0);
 			let history_depth = Self::history_depth();
@@ -770,6 +786,7 @@ pub mod pallet {
 				active: value,
 				unlocking: vec![],
 				claimed_rewards: (last_reward_era..current_era).collect(),
+				cmix_id,
 			};
 			Self::update_ledger(&controller, &item);
 			Ok(())
@@ -954,7 +971,7 @@ pub mod pallet {
 		///
 		/// The dispatch origin for this call must be _Signed_ by the controller, not the stash.
 		#[pallet::weight(T::WeightInfo::validate())]
-		pub fn validate(origin: OriginFor<T>, prefs: ValidatorPrefs<T::Hash>) -> DispatchResult {
+		pub fn validate(origin: OriginFor<T>, prefs: ValidatorPrefs) -> DispatchResult {
 			let controller = ensure_signed(origin)?;
 
 			let ledger = Self::ledger(&controller).ok_or(Error::<T>::NotController)?;
@@ -971,16 +988,6 @@ pub mod pallet {
 						CounterForValidators::<T>::get() < max_validators,
 						Error::<T>::TooManyValidators
 					);
-				}
-			}
-
-			// Ensure validator cmix id is unique
-			// unless validator exists and cmix id remains the same
-			let existing_prefs = <Validators<T>>::get(stash);
-			let cmix_root = prefs.cmix_root.clone();
-			if existing_prefs.cmix_root != cmix_root {
-				if <CmixIds<T>>::contains_key(&cmix_root) {
-					Err(Error::<T>::ValidatorCmixIdNotUnique)?
 				}
 			}
 
