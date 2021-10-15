@@ -75,9 +75,9 @@ pub fn config_endowed(
 		},
 		staking: StakingConfig {
 			stakers: vec![
-				(dave(), alice(), 111 * DOLLARS, StakerStatus::Validator),
-				(eve(), bob(), 100 * DOLLARS, StakerStatus::Validator),
-				(ferdie(), charlie(), 100 * DOLLARS, StakerStatus::Validator),
+				(dave(), alice(), 111 * DOLLARS, StakerStatus::Validator(Some(dave_cmix_id()))),
+				(eve(), bob(), 100 * DOLLARS, StakerStatus::Validator(Some(eve_cmix_id()))),
+				(ferdie(), charlie(), 100 * DOLLARS, StakerStatus::Validator(Some(ferdie_cmix_id()))),
 			],
 			validator_count: 3,
 			minimum_validator_count: 0,

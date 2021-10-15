@@ -661,9 +661,34 @@ pub trait CmixHandler {
 	fn end_era();
 }
 
+pub struct DefaultCmixHandler;
+
+impl CmixHandler for DefaultCmixHandler {
+	fn get_block_points() -> u32 {
+		// Substrate default is 20 points per block
+		20
+	}
+	fn end_era() {
+		// nothing to do
+	}
+}
+
 pub trait CustodyHandler<AccountId, Balance> {
 	fn is_custody_account(who: &AccountId) -> bool;
 	fn total_custody() -> Balance;
+}
+
+pub struct DefaultCustodyHandler;
+
+impl<AccountId, Balance: AtLeast32BitUnsigned>
+	CustodyHandler<AccountId, Balance> for DefaultCustodyHandler {
+	fn is_custody_account(_: &AccountId) -> bool {
+		false
+	}
+
+	fn total_custody() -> Balance {
+		Balance::zero()
+	}
 }
 
 /// Adaptor to turn a `PiecewiseLinear` curve definition into an `EraPayout` impl, used for

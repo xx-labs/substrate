@@ -19,7 +19,7 @@
 //! Test accounts.
 
 use codec::Encode;
-use node_primitives::{AccountId, Balance, Index};
+use node_primitives::{AccountId, Balance, Index, Hash};
 use node_runtime::{CheckedExtrinsic, SessionKeys, SignedExtra, UncheckedExtrinsic};
 use sp_keyring::{AccountKeyring, Ed25519Keyring, Sr25519Keyring};
 use sp_runtime::generic::Era;
@@ -29,30 +29,48 @@ pub fn alice() -> AccountId {
 	AccountKeyring::Alice.into()
 }
 
+/// Alice's cmix id.
+pub fn alice_cmix_id() -> Hash { Hash::repeat_byte(1u8) }
+
 /// Bob's account id.
 pub fn bob() -> AccountId {
 	AccountKeyring::Bob.into()
 }
+
+/// Bob's cmix id.
+pub fn bob_cmix_id() -> Hash { Hash::repeat_byte(2u8) }
 
 /// Charlie's account id.
 pub fn charlie() -> AccountId {
 	AccountKeyring::Charlie.into()
 }
 
+/// Charlie's cmix id.
+pub fn charlie_cmix_id() -> Hash { Hash::repeat_byte(3u8) }
+
 /// Dave's account id.
 pub fn dave() -> AccountId {
 	AccountKeyring::Dave.into()
 }
+
+/// Dave's cmix id.
+pub fn dave_cmix_id() -> Hash { Hash::repeat_byte(4u8) }
 
 /// Eve's account id.
 pub fn eve() -> AccountId {
 	AccountKeyring::Eve.into()
 }
 
+/// Eve's cmix id.
+pub fn eve_cmix_id() -> Hash { Hash::repeat_byte(5u8) }
+
 /// Ferdie's account id.
 pub fn ferdie() -> AccountId {
 	AccountKeyring::Ferdie.into()
 }
+
+/// Ferdie's cmix id.
+pub fn ferdie_cmix_id() -> Hash { Hash::repeat_byte(6u8) }
 
 /// Convert keyrings into `SessionKeys`.
 pub fn to_session_keys(

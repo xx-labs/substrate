@@ -534,6 +534,9 @@ impl pallet_staking::Config for Runtime {
 	// Note that the aforementioned does not scale to a very large number of nominators.
 	type SortedListProvider = BagsList;
 	type WeightInfo = pallet_staking::weights::SubstrateWeight<Runtime>;
+	type CmixHandler = pallet_staking::DefaultCmixHandler;
+	type CustodyHandler = pallet_staking::DefaultCustodyHandler;
+	type AdminOrigin = EnsureRoot<AccountId>;
 }
 
 parameter_types! {
