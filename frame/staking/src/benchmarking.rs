@@ -28,7 +28,7 @@ use frame_support::{
 	traits::{Currency, CurrencyToVote, Get, Imbalance},
 };
 use sp_runtime::{
-	traits::{StaticLookup, Zero},
+	traits::{StaticLookup, Zero, Hash},
 	Perbill, Percent,
 };
 use sp_staking::SessionIndex;
@@ -212,10 +212,10 @@ benchmarks! {
 		let controller = create_funded_user::<T>("controller", USER_SEED, 100);
 		let controller_lookup: <T::Lookup as StaticLookup>::Source
 			= T::Lookup::unlookup(controller.clone());
-		let reward_destination = RewardDestination::Staked;
 		let amount = T::Currency::minimum_balance() * 10u32.into();
+		let cmix_id = T::Hashing::hash(&mut USER_SEED.to_be_bytes());
 		whitelist_account!(stash);
-	}: _(RawOrigin::Signed(stash.clone()), controller_lookup, amount, reward_destination)
+	}: _(RawOrigin::Signed(stash.clone()), controller_lookup, amount, Some(cmix_id))
 	verify {
 		assert!(Bonded::<T>::contains_key(stash));
 		assert!(Ledger::<T>::contains_key(controller));
@@ -457,15 +457,6 @@ benchmarks! {
 		assert!(!T::SortedListProvider::contains(&stash));
 	}
 
-	set_payee {
-		let (stash, controller) = create_stash_controller::<T>(USER_SEED, 100, Default::default())?;
-		assert_eq!(Payee::<T>::get(&stash), RewardDestination::Staked);
-		whitelist_account!(controller);
-	}: _(RawOrigin::Signed(controller), RewardDestination::Controller)
-	verify {
-		assert_eq!(Payee::<T>::get(&stash), RewardDestination::Controller);
-	}
-
 	set_controller {
 		let (stash, _) = create_stash_controller::<T>(USER_SEED, 100, Default::default())?;
 		let new_controller = create_funded_user::<T>("new_controller", USER_SEED, 100);
@@ -541,46 +532,11 @@ benchmarks! {
 		assert_eq!(UnappliedSlashes::<T>::get(&era).len(), (MAX_SLASHES - s) as usize);
 	}
 
-	payout_stakers_dead_controller {
-		let n in 1 .. T::MaxNominatorRewardedPerValidator::get() as u32;
-		let (validator, nominators) = create_validator_with_nominators::<T>(
-			n,
-			T::MaxNominatorRewardedPerValidator::get() as u32,
-			true,
-			RewardDestination::Controller,
-		)?;
-
-		let current_era = CurrentEra::<T>::get().unwrap();
-		// set the commission for this particular era as well.
-		<ErasValidatorPrefs<T>>::insert(current_era, validator.clone(), <Staking<T>>::validators(&validator));
-
-		let caller = whitelisted_caller();
-		let validator_controller = <Bonded<T>>::get(&validator).unwrap();
-		let balance_before = T::Currency::free_balance(&validator_controller);
-		for (_, controller) in &nominators {
-			let balance = T::Currency::free_balance(&controller);
-			ensure!(balance.is_zero(), "Controller has balance, but should be dead.");
-		}
-	}: payout_stakers(RawOrigin::Signed(caller), validator.clone(), current_era)
-	verify {
-		let balance_after = T::Currency::free_balance(&validator_controller);
-		ensure!(
-			balance_before < balance_after,
-			"Balance of validator controller should have increased after payout.",
-		);
-		for (_, controller) in &nominators {
-			let balance = T::Currency::free_balance(&controller);
-			ensure!(!balance.is_zero(), "Payout not given to controller.");
-		}
-	}
-
 	payout_stakers_alive_staked {
 		let n in 1 .. T::MaxNominatorRewardedPerValidator::get() as u32;
 		let (validator, nominators) = create_validator_with_nominators::<T>(
 			n,
 			T::MaxNominatorRewardedPerValidator::get() as u32,
-			false,
-			RewardDestination::Staked,
 		)?;
 
 		let current_era = CurrentEra::<T>::get().unwrap();

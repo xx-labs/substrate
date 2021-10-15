@@ -28,7 +28,7 @@ use frame_support::traits::{Currency, ValidatorSet, ValidatorSetWithIdentificati
 use frame_system::{Config as SystemConfig, Pallet as System, RawOrigin};
 
 use sp_runtime::{
-	traits::{Convert, Saturating, StaticLookup, UniqueSaturatedInto},
+	traits::{Convert, Saturating, StaticLookup, UniqueSaturatedInto, Hash},
 	Perbill,
 };
 use sp_staking::offence::{Offence, ReportOffence};
@@ -44,7 +44,7 @@ use pallet_session::{
 };
 use pallet_staking::{
 	Config as StakingConfig, Event as StakingEvent, Exposure, IndividualExposure,
-	Pallet as Staking, RewardDestination, ValidatorPrefs,
+	Pallet as Staking, ValidatorPrefs,
 };
 
 const SEED: u32 = 0;
@@ -100,7 +100,7 @@ fn create_offender<T: Config>(n: u32, nominators: u32) -> Result<Offender<T>, &'
 	let stash: T::AccountId = account("stash", n, SEED);
 	let controller: T::AccountId = account("controller", n, SEED);
 	let controller_lookup: LookupSourceOf<T> = T::Lookup::unlookup(controller.clone());
-	let reward_destination = RewardDestination::Staked;
+	let cmix_id = T::Hashing::hash(&mut SEED.to_be_bytes());
 	let raw_amount = bond_amount::<T>();
 	// add twice as much balance to prevent the account from being killed.
 	let free_amount = raw_amount.saturating_mul(2u32.into());
@@ -110,7 +110,7 @@ fn create_offender<T: Config>(n: u32, nominators: u32) -> Result<Offender<T>, &'
 		RawOrigin::Signed(stash.clone()).into(),
 		controller_lookup.clone(),
 		amount.clone(),
-		reward_destination.clone(),
+		Some(cmix_id.clone()),
 	)?;
 
 	let validator_prefs =
@@ -133,7 +133,7 @@ fn create_offender<T: Config>(n: u32, nominators: u32) -> Result<Offender<T>, &'
 			RawOrigin::Signed(nominator_stash.clone()).into(),
 			nominator_controller_lookup.clone(),
 			amount.clone(),
-			reward_destination.clone(),
+			Some(cmix_id.clone()),
 		)?;
 
 		let selected_validators: Vec<LookupSourceOf<T>> = vec![controller_lookup.clone()];
