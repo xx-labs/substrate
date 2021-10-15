@@ -277,6 +277,8 @@ pub mod testing_utils;
 pub(crate) mod mock;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod xx_tests;
 
 pub mod inflation;
 pub mod migrations;
