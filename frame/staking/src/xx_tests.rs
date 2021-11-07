@@ -422,3 +422,46 @@ fn reward_handler_called_on_do_payout_stakers() {
             assert_eq!(mock::RewardMock::total(), total_payout_0);
         })
 }
+
+
+//////////////////////////////////////////
+//       Min Validator Commission       //
+//////////////////////////////////////////
+
+#[test]
+fn min_validator_commission_check_works() {
+    ExtBuilder::default()
+        .existential_deposit(100)
+        .balance_factor(100)
+        .min_validator_commission(Perbill::from_percent(2))
+        .build_and_execute(|| {
+            assert_ok!(Staking::bond(Origin::signed(3), 4, 500, cmix_id(3u8)));
+            // commission lower than allowed is not enough to be a validator
+            assert_noop!(
+				Staking::validate(
+				    Origin::signed(4),
+				    ValidatorPrefs { commission: Perbill::from_percent(1), blocked: false }
+				),
+				Error::<Test>::ValidatorCommissionTooLow,
+			);
+
+            // 2 percent is exactly enough
+            assert_ok!(
+				Staking::validate(
+				    Origin::signed(4),
+				    ValidatorPrefs { commission: Perbill::from_percent(2), blocked: false }
+				)
+			);
+
+            // chill
+            assert_ok!(Staking::chill(Origin::signed(4)));
+
+            // >2 percent is also enough
+            assert_ok!(
+				Staking::validate(
+				    Origin::signed(4),
+				    ValidatorPrefs { commission: Perbill::from_percent(3), blocked: false }
+				)
+			);
+        })
+}

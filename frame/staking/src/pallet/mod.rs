@@ -221,6 +221,10 @@ pub mod pallet {
 	#[pallet::storage]
 	pub type MinValidatorBond<T: Config> = StorageValue<_, BalanceOf<T>, ValueQuery>;
 
+	/// The minimum commission that a validator can have.
+	#[pallet::storage]
+	pub type MinValidatorCommission<T: Config> = StorageValue<_, Perbill, ValueQuery>;
+
 	/// Map from all (unlocked) "controller" accounts to the info regarding the staking.
 	#[pallet::storage]
 	#[pallet::getter(fn ledger)]
@@ -492,6 +496,7 @@ pub mod pallet {
 			Vec<(T::AccountId, T::AccountId, BalanceOf<T>, crate::StakerStatus<T::Hash, T::AccountId>)>,
 		pub min_nominator_bond: BalanceOf<T>,
 		pub min_validator_bond: BalanceOf<T>,
+		pub min_validator_commission: Perbill,
 	}
 
 	#[cfg(feature = "std")]
@@ -508,6 +513,7 @@ pub mod pallet {
 				stakers: Default::default(),
 				min_nominator_bond: Default::default(),
 				min_validator_bond: Default::default(),
+				min_validator_commission: Default::default(),
 			}
 		}
 	}
@@ -525,6 +531,7 @@ pub mod pallet {
 			StorageVersion::<T>::put(Releases::V7_0_0);
 			MinNominatorBond::<T>::put(self.min_nominator_bond);
 			MinValidatorBond::<T>::put(self.min_validator_bond);
+			MinValidatorCommission::<T>::put(self.min_validator_commission);
 
 			for &(ref stash, ref controller, balance, ref status) in &self.stakers {
 				log!(
@@ -548,10 +555,11 @@ pub mod pallet {
 					balance,
 					cmix_id,
 				));
+				// Genesis validators have the minimum commission
 				frame_support::assert_ok!(match status {
 					crate::StakerStatus::Validator(_) => <Pallet<T>>::validate(
 						T::Origin::from(Some(controller.clone()).into()),
-						Default::default(),
+						ValidatorPrefs { commission: self.min_validator_commission, blocked: false },
 					),
 					crate::StakerStatus::Nominator(votes) => <Pallet<T>>::nominate(
 						T::Origin::from(Some(controller.clone()).into()),
@@ -662,6 +670,8 @@ pub mod pallet {
 		ValidatorCmixIdNotUnique,
 		/// Validator must have a CMIX ID
 		ValidatorMustHaveCmixId,
+		/// Validator commission is too low
+		ValidatorCommissionTooLow,
 	}
 
 	#[pallet::hooks]
@@ -980,6 +990,8 @@ pub mod pallet {
 			ensure!(ledger.active >= MinValidatorBond::<T>::get(), Error::<T>::InsufficientBond);
 			// Require validators to have set a cmix ID
 			ensure!(ledger.cmix_id.is_some(), Error::<T>::ValidatorMustHaveCmixId);
+			// Require validators commission to be at least the minimum
+			ensure!(prefs.commission >= MinValidatorCommission::<T>::get(), Error::<T>::ValidatorCommissionTooLow);
 			let stash = &ledger.stash;
 
 			// Only check limits if they are not already a validator.
@@ -1516,6 +1528,7 @@ pub mod pallet {
 			max_nominator_count: Option<u32>,
 			max_validator_count: Option<u32>,
 			threshold: Option<Percent>,
+			min_commission: Perbill,
 		) -> DispatchResult {
 			Self::ensure_admin(origin)?;
 			MinNominatorBond::<T>::set(min_nominator_bond);
@@ -1523,6 +1536,7 @@ pub mod pallet {
 			MaxNominatorsCount::<T>::set(max_nominator_count);
 			MaxValidatorsCount::<T>::set(max_validator_count);
 			ChillThreshold::<T>::set(threshold);
+			MinValidatorCommission::<T>::set(min_commission);
 			Ok(())
 		}
 

@@ -352,6 +352,7 @@ pub struct ExtBuilder {
 	initialize_first_session: bool,
 	min_nominator_bond: Balance,
 	min_validator_bond: Balance,
+	min_validator_commission: Perbill,
 	balance_factor: Balance,
 	status: BTreeMap<AccountId, StakerStatus<CmixId, AccountId>>,
 	stakes: BTreeMap<AccountId, Balance>,
@@ -370,6 +371,7 @@ impl Default for ExtBuilder {
 			initialize_first_session: true,
 			min_nominator_bond: ExistentialDeposit::get(),
 			min_validator_bond: ExistentialDeposit::get(),
+			min_validator_commission: Default::default(),
 			status: Default::default(),
 			stakes: Default::default(),
 			stakers: Default::default(),
@@ -432,6 +434,10 @@ impl ExtBuilder {
 	}
 	pub fn min_validator_bond(mut self, amount: Balance) -> Self {
 		self.min_validator_bond = amount;
+		self
+	}
+	pub fn min_validator_commission(mut self, commission: Perbill) -> Self {
+		self.min_validator_commission = commission;
 		self
 	}
 	pub fn set_status(mut self, who: AccountId, status: StakerStatus<CmixId, AccountId>) -> Self {
@@ -554,6 +560,7 @@ impl ExtBuilder {
 			slash_reward_fraction: Perbill::from_percent(10),
 			min_nominator_bond: self.min_nominator_bond,
 			min_validator_bond: self.min_validator_bond,
+			min_validator_commission: self.min_validator_commission,
 			..Default::default()
 		}
 		.assimilate_storage(&mut storage);

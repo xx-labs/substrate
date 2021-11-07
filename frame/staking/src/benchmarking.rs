@@ -794,20 +794,22 @@ benchmarks! {
 	}
 
 	set_staking_limits {
-		// This function always does the same thing... just write to 4 storage items.
+		// This function always does the same thing... just write to 6 storage items.
 	}: _(
 		RawOrigin::Root,
 		BalanceOf::<T>::max_value(),
 		BalanceOf::<T>::max_value(),
 		Some(u32::MAX),
 		Some(u32::MAX),
-		Some(Percent::max_value())
+		Some(Percent::max_value()),
+		Perbill::one()
 	) verify {
 		assert_eq!(MinNominatorBond::<T>::get(), BalanceOf::<T>::max_value());
 		assert_eq!(MinValidatorBond::<T>::get(), BalanceOf::<T>::max_value());
 		assert_eq!(MaxNominatorsCount::<T>::get(), Some(u32::MAX));
 		assert_eq!(MaxValidatorsCount::<T>::get(), Some(u32::MAX));
 		assert_eq!(ChillThreshold::<T>::get(), Some(Percent::from_percent(100)));
+		assert_eq!(MinValidatorCommission::<T>::get(), Perbill::one());
 	}
 
 	chill_other {
@@ -829,7 +831,8 @@ benchmarks! {
 			BalanceOf::<T>::max_value(),
 			Some(0),
 			Some(0),
-			Some(Percent::from_percent(0))
+			Some(Percent::from_percent(0)),
+			Perbill::zero()
 		)?;
 
 		let caller = whitelisted_caller();
