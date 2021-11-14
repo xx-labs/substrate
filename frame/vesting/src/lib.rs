@@ -73,7 +73,7 @@ use sp_runtime::{
 	},
 	RuntimeDebug,
 };
-use sp_std::{convert::TryInto, fmt::Debug, prelude::*};
+use sp_std::{convert::TryInto, fmt::Debug, prelude::*, collections::btree_map::BTreeMap};
 pub use vesting_info::*;
 pub use weights::WeightInfo;
 
@@ -253,6 +253,8 @@ pub mod pallet {
 			// * begin - Block when the account will start to vest
 			// * length - Number of blocks from `begin` until fully vested
 			// * liquid - Number of units which can be spent before vesting begins
+			// Accumulate locks for each account
+			let mut accts = BTreeMap::new();
 			for &(ref who, begin, length, liquid) in self.vesting.iter() {
 				let balance = T::Currency::free_balance(who);
 				assert!(!balance.is_zero(), "Currencies must be init'd before vesting");
@@ -268,9 +270,13 @@ pub mod pallet {
 				Vesting::<T>::try_append(who, vesting_info)
 					.expect("Too many vesting schedules at genesis.");
 
-				let reasons = WithdrawReasons::TRANSFER | WithdrawReasons::RESERVE;
-				T::Currency::set_lock(VESTING_ID, who, locked, reasons);
+				*accts.entry(who).or_default() += locked;
 			}
+
+			let reasons = WithdrawReasons::TRANSFER | WithdrawReasons::RESERVE;
+			accts.iter().for_each(|(who, locked)| {
+				T::Currency::set_lock(VESTING_ID, who, *locked, reasons);
+			});
 		}
 	}
 
