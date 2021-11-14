@@ -1155,3 +1155,32 @@ fn vested_transfer_less_than_existential_deposit_fails() {
 		);
 	});
 }
+
+#[test]
+fn multiple_vesting_correct_at_genesis() {
+	// Account 12 has balance of 10 * 4 * ED = 10240
+	let balance = 10240u64;
+	let vesting_schedules = vec![
+		// Vest 100 from block 0 to 10
+		(12,  0, 10, balance-100),
+		// Vest 100 more starting at block 10 to block 20
+		(12, 10, 10, balance-100),
+		// Total lock should be 200 at genesis
+	];
+	let total_lock = 200u64;
+	ExtBuilder::default()
+		.existential_deposit(4 * ED)
+		.vesting_genesis_config(vesting_schedules)
+		.build().execute_with(|| {
+		// MinVestedTransfer is less the ED.
+		assert!(
+			<Test as Config>::Currency::minimum_balance() >
+				<Test as Config>::MinVestedTransfer::get()
+		);
+		// Total lock should be 20 at genesis, so usable balance should be 20
+		assert_eq!(
+			Balances::usable_balance(&12),
+			balance-total_lock
+		);
+	});
+}
