@@ -162,7 +162,7 @@ impl<T: Config> ListScenario<T> {
 		let (origin_stash1, origin_controller1) = create_stash_controller_with_balance::<T>(
 			USER_SEED + 2,
 			origin_weight,
-			None,
+			Some(T::Hashing::hash(&mut (USER_SEED + 2).to_be_bytes())),
 		)?;
 		Staking::<T>::nominate(
 			RawOrigin::Signed(origin_controller1.clone()).into(),
@@ -173,7 +173,7 @@ impl<T: Config> ListScenario<T> {
 		let (_origin_stash2, origin_controller2) = create_stash_controller_with_balance::<T>(
 			USER_SEED + 3,
 			origin_weight,
-			None,
+			Some(T::Hashing::hash(&mut (USER_SEED + 3).to_be_bytes())),
 		)?;
 		Staking::<T>::nominate(
 			RawOrigin::Signed(origin_controller2.clone()).into(),
@@ -193,7 +193,7 @@ impl<T: Config> ListScenario<T> {
 		let (_dest_stash1, dest_controller1) = create_stash_controller_with_balance::<T>(
 			USER_SEED + 1,
 			dest_weight,
-			None,
+			Some(T::Hashing::hash(&mut (USER_SEED + 1).to_be_bytes())),
 		)?;
 		Staking::<T>::nominate(
 			RawOrigin::Signed(dest_controller1).into(),
