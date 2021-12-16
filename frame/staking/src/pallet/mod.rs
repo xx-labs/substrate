@@ -672,6 +672,8 @@ pub mod pallet {
 		ValidatorMustHaveCmixId,
 		/// Validator commission is too low
 		ValidatorCommissionTooLow,
+		/// Stash account already has a CMIX ID
+		StashAlreadyHasCmixId,
 	}
 
 	#[pallet::hooks]
@@ -1606,6 +1608,45 @@ pub mod pallet {
 			}
 
 			Self::chill_stash(&stash);
+			Ok(())
+		}
+
+		/// Set the CMIX ID of a stash, if it doesn't have one already.
+		///
+		/// The dispatch origin for this call must be _Signed_ by the stash, not the controller.
+		///
+		/// # <weight>
+		/// - Independent of the arguments. Insignificant complexity.
+		/// ----------
+		/// Weight: O(1)
+		/// DB Weight:
+		/// - Read: Bonded, Ledger
+		/// - Write: Ledger
+		/// # </weight>
+		#[pallet::weight(T::WeightInfo::set_cmix_id())]
+		pub fn set_cmix_id(
+			origin: OriginFor<T>,
+			cmix_id: T::Hash,
+		) -> DispatchResult {
+			let stash = ensure_signed(origin)?;
+			let controller = Self::bonded(&stash).ok_or(Error::<T>::NotStash)?;
+
+			let mut ledger = <Ledger<T>>::get(&controller).ok_or(Error::<T>::NotController)?;
+
+			// Ensure cmix id is not set
+			if ledger.cmix_id.is_some() {
+				Err(Error::<T>::StashAlreadyHasCmixId)?
+			}
+
+			// Ensure cmix id is unique
+			if <CmixIds<T>>::contains_key(&cmix_id) {
+				Err(Error::<T>::ValidatorCmixIdNotUnique)?
+			}
+
+			// Set cmix id and write ledger
+			<CmixIds<T>>::insert(&cmix_id, ());
+			ledger.cmix_id = Some(cmix_id);
+			<Ledger<T>>::insert(&controller, &ledger);
 			Ok(())
 		}
 	}

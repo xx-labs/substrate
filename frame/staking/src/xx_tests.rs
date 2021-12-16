@@ -99,6 +99,79 @@ fn after_full_unbond_cmix_id_is_removed() {
         })
 }
 
+#[test]
+fn calling_set_cmix_id_correctly_stores_cmix_id() {
+    let stash_value = 100;
+    ExtBuilder::default()
+        .has_stakers(false)
+        .build_and_execute(|| {
+            let _ = Balances::make_free_balance_be(&10, stash_value);
+
+            // Can't call function if not bonded
+            assert_noop!(
+                Staking::set_cmix_id(Origin::signed(10), cmix_id(10u8).unwrap()),
+                Error::<Test>::NotStash,
+            );
+
+            // Bond account without cmix id
+            assert_ok!(Staking::bond(Origin::signed(10), 11, stash_value, None));
+
+            // Can't call function from controller
+            assert_noop!(
+                Staking::set_cmix_id(Origin::signed(11), cmix_id(10u8).unwrap()),
+                Error::<Test>::NotStash,
+            );
+
+            // Set cmix id
+            assert_ok!(Staking::set_cmix_id(Origin::signed(10), cmix_id(10u8).unwrap()));
+
+            // confirm cmix ID is correctly stored
+            assert!(CmixIds::<Test>::contains_key(&cmix_id(10u8).unwrap()));
+        })
+}
+
+#[test]
+fn calling_set_cmix_id_stash_already_has_cmix_id_fails() {
+    let stash_value = 100;
+    ExtBuilder::default()
+        .has_stakers(false)
+        .build_and_execute(|| {
+            let _ = Balances::make_free_balance_be(&10, stash_value);
+
+            // bond first validator with cmix id
+            assert_ok!(Staking::bond(Origin::signed(10), 11, stash_value, cmix_id(10u8)));
+
+            // can't set cmix id, since it's already present
+            assert_noop!(
+                Staking::set_cmix_id(Origin::signed(10), cmix_id(11u8).unwrap()),
+                Error::<Test>::StashAlreadyHasCmixId,
+            );
+        })
+}
+
+#[test]
+fn calling_set_cmix_id_with_existing_cmix_id_fails() {
+    let stash_value = 100;
+    ExtBuilder::default()
+        .has_stakers(false)
+        .build_and_execute(|| {
+            let _ = Balances::make_free_balance_be(&10, stash_value);
+            let _ = Balances::make_free_balance_be(&20, stash_value);
+
+            // bond first validator with cmix id
+            assert_ok!(Staking::bond(Origin::signed(10), 11, stash_value, cmix_id(10u8)));
+
+            // bond second validator without
+            assert_ok!(Staking::bond(Origin::signed(20), 21, stash_value, None));
+
+            // if second vaidator tries to set existing cmix id, fails with ValidatorCmixIdNotUnique
+            assert_noop!(
+                Staking::set_cmix_id(Origin::signed(20), cmix_id(10u8).unwrap()),
+                Error::<Test>::ValidatorCmixIdNotUnique,
+            );
+        })
+}
+
 ////////////////////////////////////////
 //         Rewards Destination        //
 ////////////////////////////////////////
