@@ -59,9 +59,10 @@ use frame_support::{
 	ensure,
 	pallet_prelude::*,
 	traits::{
-		Currency, ExistenceRequirement, Get, LockIdentifier, LockableCurrency, VestingSchedule,
+		Currency, EnsureOrigin, ExistenceRequirement, Get, LockIdentifier, LockableCurrency, VestingSchedule,
 		WithdrawReasons,
 	},
+	weights::{DispatchClass, Pays},
 };
 use frame_system::{ensure_root, ensure_signed, pallet_prelude::*};
 pub use pallet::*;
@@ -163,6 +164,9 @@ pub mod pallet {
 
 		/// Weight information for extrinsics in this pallet.
 		type WeightInfo: WeightInfo;
+
+		/// Origin used to perform fixes to incorrect vesting schedules
+		type AdminOrigin: EnsureOrigin<Self::Origin>;
 
 		/// Maximum number of vesting schedules an account may have at a given moment.
 		const MAX_VESTING_SCHEDULES: u32;
@@ -465,6 +469,43 @@ pub mod pallet {
 
 			Ok(())
 		}
+
+		/// Allows admin to set vesting schedules for an account
+		///
+		/// The dispatch origin for this call must be _AdminOrigin_.
+		///
+		/// - `target`: The account to set new vesting schedules
+		/// - `schedules`: The vesting schedules list.
+		///
+		/// NOTE: This will unlock all schedules through the current block.
+		///
+		/// # <weight>
+		/// - `O(1)`.
+		/// - DbWeight: 4 Reads, 4 Writes
+		///     - Reads: Vesting Storage, Balances Locks, Target Account, Source Account
+		///     - Writes: Vesting Storage, Balances Locks, Target Account, Source Account
+		/// # </weight>
+		#[pallet::weight((
+			T::WeightInfo::unlocking_merge_schedules(MaxLocksOf::<T>::get(), T::MAX_VESTING_SCHEDULES),
+			DispatchClass::Operational,
+			Pays::No
+		))]
+		pub fn admin_set_vesting(
+			origin: OriginFor<T>,
+			target: <T::Lookup as StaticLookup>::Source,
+			schedules: Vec<VestingInfo<BalanceOf<T>, T::BlockNumber>>,
+		) -> DispatchResult {
+			Self::ensure_admin(origin)?;
+			let who = T::Lookup::lookup(target)?;
+
+			let (updated_schedules, locked_now) =
+				Self::exec_action(schedules, VestingAction::Passive)?;
+
+			Self::write_vesting(&who, updated_schedules)?;
+			Self::write_lock(&who, locked_now);
+
+			Ok(())
+		}
 	}
 }
 
@@ -678,6 +719,14 @@ impl<T: Config> Pallet<T> {
 		);
 
 		Ok((schedules, locked_now))
+	}
+
+	/// Check if origin is admin
+	fn ensure_admin(o: T::Origin) -> DispatchResult {
+		T::AdminOrigin::try_origin(o)
+			.map(|_| ())
+			.or_else(ensure_root)?;
+		Ok(())
 	}
 }
 

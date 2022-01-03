@@ -1184,3 +1184,95 @@ fn multiple_vesting_correct_at_genesis() {
 		);
 	});
 }
+
+#[test]
+fn admin_set_vesting_works() {
+	// Account 12 has balance of 10 * 4 * ED = 10240
+	let balance = 10240u64;
+	let vesting_schedules = vec![
+		// Vest 100 from block 0 to 100
+		(12,  0, 1, balance-100),
+	];
+	let new_vesting_schedules = vec![
+		// Lock 100 until block 10
+		VestingInfo::new(100, 100, 10),
+		// Lock 100 from block 10 unlocking 10 per block after block 10
+		VestingInfo::new(100, 10, 10),
+	];
+	ExtBuilder::default()
+		.existential_deposit(4 * ED)
+		.vesting_genesis_config(vesting_schedules)
+		.build().execute_with(|| {
+			// Non admin can't call function
+			assert_noop!(
+				Vesting::admin_set_vesting(Some(4).into(), 12, new_vesting_schedules.clone()),
+				BadOrigin
+			);
+
+			// Admin can call the function
+			assert_ok!(Vesting::admin_set_vesting(
+				RawOrigin::Root.into(), 12, new_vesting_schedules.clone()
+			));
+
+			// Vesting schedules updated
+			assert_eq!(
+				<VestingStorage<Test>>::get(&12).unwrap().to_vec(),
+				new_vesting_schedules
+			);
+
+			// Total lock should be 200
+			assert_eq!(
+				Balances::usable_balance(&12),
+				balance-200
+			);
+		});
+}
+
+#[test]
+fn admin_set_vesting_works_different_scenarios() {
+	// Account 12 has balance of 10 * 4 * ED = 10240
+	let balance = 10240u64;
+	let vesting_schedules = vec![
+		// Vest 100 from block 0 to 100
+		(12,  0, 1, balance-100),
+	];
+	let new_vesting_schedules = vec![
+		// Lock 100 until block 10
+		VestingInfo::new(100, 100, 10),
+		// Lock 100 from block 10 unlocking 10 per block after block 10
+		VestingInfo::new(100, 10, 10),
+	];
+	ExtBuilder::default()
+		.existential_deposit(4 * ED)
+		.vesting_genesis_config(vesting_schedules)
+		.build().execute_with(|| {
+			// Empty vector removes existing schedules
+			assert_ok!(Vesting::admin_set_vesting(
+				RawOrigin::Root.into(), 12, vec![]
+			));
+
+			// Vesting schedules removed
+			assert!(!<VestingStorage<Test>>::contains_key(&12));
+
+			// Move to block 15
+			System::set_block_number(15);
+			assert_eq!(System::block_number(), 15);
+
+			// Set schedules
+			assert_ok!(Vesting::admin_set_vesting(
+				RawOrigin::Root.into(), 12, new_vesting_schedules.clone()
+			));
+
+			// Vesting schedules updated, with expired schedule removed
+			assert_eq!(
+				<VestingStorage<Test>>::get(&12).unwrap().to_vec(),
+				vec![VestingInfo::new(100, 10, 10)]
+			);
+
+			// Total lock should be 50
+			assert_eq!(
+				Balances::usable_balance(&12),
+				balance-50
+			);
+	});
+}
