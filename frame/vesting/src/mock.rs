@@ -95,7 +95,6 @@ impl Config for Test {
 	const MAX_VESTING_SCHEDULES: u32 = 3;
 	type MinVestedTransfer = MinVestedTransfer;
 	type WeightInfo = ();
-	type AdminOrigin = frame_system::EnsureRoot<Self::AccountId>;
 }
 
 pub struct ExtBuilder {
