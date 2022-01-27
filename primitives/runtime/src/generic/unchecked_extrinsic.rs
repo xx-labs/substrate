@@ -138,7 +138,7 @@ where
 	<Signature as traits::Verify>::Signer: IdentifyAccount<AccountId = AccountId>,
 	Extra: SignedExtension<AccountId = AccountId>,
 	AccountId: Member + MaybeDisplay,
-	Lookup: traits::Lookup<Source = Address, Target = AccountId>,
+	Lookup: traits::Lookup<Source = Address, Target = (AccountId, AccountId)>,
 {
 	type Checked = CheckedExtrinsic<AccountId, Call, Extra>;
 
@@ -147,12 +147,12 @@ where
 			Some((signed, signature, extra)) => {
 				let signed = lookup.lookup(signed)?;
 				let raw_payload = SignedPayload::new(self.function, extra)?;
-				if !raw_payload.using_encoded(|payload| signature.verify(payload, &signed)) {
+				if !raw_payload.using_encoded(|payload| signature.verify(payload, &signed.1)) {
 					return Err(InvalidTransaction::BadProof.into())
 				}
 
 				let (function, extra, _) = raw_payload.deconstruct();
-				CheckedExtrinsic { signed: Some((signed, extra)), function }
+				CheckedExtrinsic { signed: Some((signed.0, extra)), function }
 			},
 			None => CheckedExtrinsic { signed: None, function: self.function },
 		})

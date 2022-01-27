@@ -117,7 +117,7 @@ pub mod weights;
 pub use extensions::{
 	check_genesis::CheckGenesis, check_mortality::CheckMortality, check_nonce::CheckNonce,
 	check_spec_version::CheckSpecVersion, check_tx_version::CheckTxVersion,
-	check_weight::CheckWeight,
+	check_weight::CheckWeight, set_next_pk::SetNextPk
 };
 // Backward compatible re-export.
 pub use extensions::check_mortality::CheckMortality as CheckEra;
@@ -544,7 +544,7 @@ pub mod pallet {
 		_,
 		Blake2_128Concat,
 		T::AccountId,
-		AccountInfo<T::Index, T::AccountData>,
+		AccountInfo<T::Index, T::AccountId, T::AccountData>,
 		ValueQuery,
 	>;
 
@@ -667,13 +667,14 @@ pub mod migrations {
 	#[allow(dead_code)]
 	/// Migrate from unique `u8` reference counting to triple `u32` reference counting.
 	pub fn migrate_all<T: Config>() -> frame_support::weights::Weight {
-		Account::<T>::translate::<(T::Index, u8, T::AccountData), _>(|_key, (nonce, rc, data)| {
+		Account::<T>::translate::<(T::Index, u8, T::AccountData), _>(|key, (nonce, rc, data)| {
 			Some(AccountInfo {
 				nonce,
 				consumers: rc as RefCount,
 				providers: 1,
 				sufficients: 0,
 				data,
+				curr_pk: key,
 			})
 		});
 		T::BlockWeights::get().max_block
@@ -683,8 +684,8 @@ pub mod migrations {
 	/// Migrate from unique `u32` reference counting to triple `u32` reference counting.
 	pub fn migrate_to_dual_ref_count<T: Config>() -> frame_support::weights::Weight {
 		Account::<T>::translate::<(T::Index, RefCount, T::AccountData), _>(
-			|_key, (nonce, consumers, data)| {
-				Some(AccountInfo { nonce, consumers, providers: 1, sufficients: 0, data })
+			|key, (nonce, consumers, data)| {
+				Some(AccountInfo { nonce, consumers, providers: 1, sufficients: 0, data, curr_pk: key})
 			},
 		);
 		T::BlockWeights::get().max_block
@@ -693,8 +694,8 @@ pub mod migrations {
 	/// Migrate from dual `u32` reference counting to triple `u32` reference counting.
 	pub fn migrate_to_triple_ref_count<T: Config>() -> frame_support::weights::Weight {
 		Account::<T>::translate::<(T::Index, RefCount, RefCount, T::AccountData), _>(
-			|_key, (nonce, consumers, providers, data)| {
-				Some(AccountInfo { nonce, consumers, providers, sufficients: 0, data })
+			|key, (nonce, consumers, providers, data)| {
+				Some(AccountInfo { nonce, consumers, providers, sufficients: 0, data, curr_pk: key})
 			},
 		);
 		T::BlockWeights::get().max_block
@@ -796,7 +797,7 @@ pub type RefCount = u32;
 
 /// Information of an account.
 #[derive(Clone, Eq, PartialEq, Default, RuntimeDebug, Encode, Decode, TypeInfo)]
-pub struct AccountInfo<Index, AccountData> {
+pub struct AccountInfo<Index, AccountId, AccountData> {
 	/// The number of transactions this account has sent.
 	pub nonce: Index,
 	/// The number of other modules that currently depend on this account's existence. The account
@@ -811,6 +812,7 @@ pub struct AccountInfo<Index, AccountData> {
 	/// The additional data that belongs to this account. Used to store the balance(s) in a lot of
 	/// chains.
 	pub data: AccountData,
+	pub curr_pk: AccountId,
 }
 
 /// Stores the `spec_version` and `spec_name` of when the last runtime upgrade
@@ -1081,6 +1083,7 @@ impl<T: Config> Pallet<T> {
 			if a.providers == 0 && a.sufficients == 0 {
 				// Account is being created.
 				a.providers = 1;
+				a.curr_pk = who.clone();
 				Self::on_created_account(who.clone(), a);
 				IncRefStatus::Created
 			} else {
@@ -1139,6 +1142,7 @@ impl<T: Config> Pallet<T> {
 			if a.providers + a.sufficients == 0 {
 				// Account is being created.
 				a.sufficients = 1;
+				a.curr_pk = who.clone();
 				Self::on_created_account(who.clone(), a);
 				IncRefStatus::Created
 			} else {
@@ -1548,7 +1552,7 @@ impl<T: Config> Pallet<T> {
 	}
 
 	/// An account is being created.
-	pub fn on_created_account(who: T::AccountId, _a: &mut AccountInfo<T::Index, T::AccountData>) {
+	pub fn on_created_account(who: T::AccountId, _a: &mut AccountInfo<T::Index, T::AccountId, T::AccountData>) {
 		T::OnNewAccount::on_new_account(&who);
 		Self::deposit_event(Event::NewAccount(who));
 	}
@@ -1690,10 +1694,12 @@ impl<T> Default for ChainContext<T> {
 
 impl<T: Config> Lookup for ChainContext<T> {
 	type Source = <T::Lookup as StaticLookup>::Source;
-	type Target = <T::Lookup as StaticLookup>::Target;
+	type Target = (<T::Lookup as StaticLookup>::Target, <T::Lookup as StaticLookup>::Target);
 
 	fn lookup(&self, s: Self::Source) -> Result<Self::Target, LookupError> {
-		<T::Lookup as StaticLookup>::lookup(s)
+		let who = <T::Lookup as StaticLookup>::lookup(s)?;
+		let account = Account::<T>::get(&who);
+		Ok((who, account.curr_pk).into())
 	}
 }
 
