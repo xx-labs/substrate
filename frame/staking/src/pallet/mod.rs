@@ -674,6 +674,12 @@ pub mod pallet {
 		ValidatorCommissionTooLow,
 		/// Stash account already has a CMIX ID
 		StashAlreadyHasCmixId,
+		/// Stash account doesn't have a CMIX ID
+		StashNoCmixId,
+		/// Stash is validating
+		StashValidating,
+		/// Stash is active validator
+		StashActiveValidator,
 	}
 
 	#[pallet::hooks]
@@ -1647,6 +1653,63 @@ pub mod pallet {
 			<CmixIds<T>>::insert(&cmix_id, ());
 			ledger.cmix_id = Some(cmix_id);
 			<Ledger<T>>::insert(&controller, &ledger);
+			Ok(())
+		}
+
+		/// Transfer the CMIX ID of a stash to a destination account.
+		///
+		/// The origin account must be a stash and cannot be validating.
+		/// Furthermore, it cannot be an validator in the current era.
+		/// The destination account must be a stash, without a CMIX ID.
+		///
+		/// The dispatch origin for this call must be _Signed_ by the stash, not the controller.
+		///
+		/// # <weight>
+		/// - Independent of the arguments. Insignificant complexity.
+		/// ----------
+		/// Weight: O(1)
+		/// DB Weight:
+		/// - Read: Bonded, Ledger, Validators, SessionInterface::validators
+		/// - Write: Ledger
+		/// # </weight>
+		#[pallet::weight(T::WeightInfo::set_cmix_id())]
+		pub fn transfer_cmix_id(
+			origin: OriginFor<T>,
+			dest: T::AccountId,
+		) -> DispatchResult {
+			let stash = ensure_signed(origin)?;
+
+			// Ensure both accounts are stashes
+			let controller = Self::bonded(&stash).ok_or(Error::<T>::NotStash)?;
+			let dest_controller = Self::bonded(&dest).ok_or(Error::<T>::NotStash)?;
+			// Get both ledgers
+			let mut ledger = <Ledger<T>>::get(&controller).ok_or(Error::<T>::NotController)?;
+			let mut dest_ledger = <Ledger<T>>::get(&dest_controller).ok_or(Error::<T>::NotController)?;
+
+			// Ensure origin ledger has a cmix id
+			if ledger.cmix_id.is_none() {
+				Err(Error::<T>::StashNoCmixId)?
+			}
+			// Ensure destination doesn't have a cmid id
+			if dest_ledger.cmix_id.is_some() {
+				Err(Error::<T>::StashAlreadyHasCmixId)?
+			}
+
+			// Ensure origin stash is not validating
+			if Validators::<T>::contains_key(&ledger.stash) {
+				Err(Error::<T>::StashValidating)?
+			}
+			// Ensure origin stash is not an active validator in the current era
+			let validators = T::SessionInterface::validators();
+			if validators.contains(&ledger.stash) {
+				Err(Error::<T>::StashActiveValidator)?
+			}
+
+			// Execute cmix id transfer
+			let cmix_id = ledger.cmix_id.take();
+			dest_ledger.cmix_id = cmix_id;
+			<Ledger<T>>::insert(&controller, &ledger);
+			<Ledger<T>>::insert(&dest_controller, &dest_ledger);
 			Ok(())
 		}
 	}
