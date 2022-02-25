@@ -1672,7 +1672,7 @@ pub mod pallet {
 		/// - Read: Bonded, Ledger, Validators, SessionInterface::validators
 		/// - Write: Ledger
 		/// # </weight>
-		#[pallet::weight(T::WeightInfo::set_cmix_id())]
+		#[pallet::weight(T::WeightInfo::transfer_cmix_id())]
 		pub fn transfer_cmix_id(
 			origin: OriginFor<T>,
 			dest: T::AccountId,

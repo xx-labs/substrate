@@ -74,6 +74,7 @@ pub trait WeightInfo {
 	fn set_staking_limits() -> Weight;
 	fn chill_other() -> Weight;
 	fn set_cmix_id() -> Weight;
+	fn transfer_cmix_id() -> Weight;
 }
 
 /// Weights for pallet_staking using the Substrate node and recommended hardware.
@@ -448,6 +449,11 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 			.saturating_add(T::DbWeight::get().reads(2 as Weight))
 			.saturating_add(T::DbWeight::get().writes(1 as Weight))
 	}
+	fn transfer_cmix_id() -> Weight {
+		(83_389_000 as Weight)
+			.saturating_add(T::DbWeight::get().reads(6 as Weight))
+			.saturating_add(T::DbWeight::get().writes(2 as Weight))
+	}
 }
 
 // For backwards compatibility and tests
@@ -820,5 +826,10 @@ impl WeightInfo for () {
 		(83_389_000 as Weight)
 			.saturating_add(RocksDbWeight::get().reads(2 as Weight))
 			.saturating_add(RocksDbWeight::get().writes(1 as Weight))
+	}
+	fn transfer_cmix_id() -> Weight {
+		(83_389_000 as Weight)
+			.saturating_add(RocksDbWeight::get().reads(6 as Weight))
+			.saturating_add(RocksDbWeight::get().writes(2 as Weight))
 	}
 }

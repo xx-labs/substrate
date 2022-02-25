@@ -172,6 +172,123 @@ fn calling_set_cmix_id_with_existing_cmix_id_fails() {
         })
 }
 
+#[test]
+fn transfer_cmix_id_works() {
+    let stash_value = 100;
+    ExtBuilder::default()
+        .has_stakers(false)
+        .build_and_execute(|| {
+            let _ = Balances::make_free_balance_be(&10, stash_value);
+            let _ = Balances::make_free_balance_be(&12, stash_value);
+
+            // Bond account 10 with cmix id
+            assert_ok!(Staking::bond(Origin::signed(10), 11, stash_value, cmix_id(10u8)));
+            // Bond account 12 without cmix id
+            assert_ok!(Staking::bond(Origin::signed(12), 13, stash_value, None));
+
+            // Confirm cmix ids
+            assert_eq!(
+                Staking::ledger(&11),
+                Some(StakingLedger {
+                    stash: 10,
+                    total: 100,
+                    active: 100,
+                    unlocking: vec![],
+                    claimed_rewards: vec![],
+                    cmix_id: cmix_id(10u8)
+                })
+            );
+            assert_eq!(
+                Staking::ledger(&13),
+                Some(StakingLedger {
+                    stash: 12,
+                    total: 100,
+                    active: 100,
+                    unlocking: vec![],
+                    claimed_rewards: vec![],
+                    cmix_id: None
+                })
+            );
+
+            // Execute cmix id transfer
+            assert_ok!(Staking::transfer_cmix_id(Origin::signed(10), 12));
+
+            // Confirm cmix ID was correctly transferred
+            assert_eq!(
+                Staking::ledger(&11),
+                Some(StakingLedger {
+                    stash: 10,
+                    total: 100,
+                    active: 100,
+                    unlocking: vec![],
+                    claimed_rewards: vec![],
+                    cmix_id: None
+                })
+            );
+            assert_eq!(
+                Staking::ledger(&13),
+                Some(StakingLedger {
+                    stash: 12,
+                    total: 100,
+                    active: 100,
+                    unlocking: vec![],
+                    claimed_rewards: vec![],
+                    cmix_id: cmix_id(10u8)
+                })
+            );
+        })
+}
+
+#[test]
+fn check_transfer_cmix_id_errors() {
+    let stash_value = 100;
+    ExtBuilder::default()
+        .build_and_execute(|| {
+            let _ = Balances::make_free_balance_be(&10, stash_value);
+            let _ = Balances::make_free_balance_be(&12, stash_value);
+            let _ = Balances::make_free_balance_be(&14, stash_value);
+
+            // Calling from a non stash account fails
+            assert_noop!(
+                Staking::transfer_cmix_id(Origin::signed(10), 41),
+                Error::<Test>::NotStash,
+            );
+
+            // Destination is not a stash account
+            assert_noop!(
+                Staking::transfer_cmix_id(Origin::signed(11), 40),
+                Error::<Test>::NotStash,
+            );
+
+            // Origin stash has no cmix id
+            assert_noop!(
+                Staking::transfer_cmix_id(Origin::signed(41), 11),
+                Error::<Test>::StashNoCmixId,
+            );
+
+            // Destination has cmix id
+            assert_noop!(
+                Staking::transfer_cmix_id(Origin::signed(11), 21),
+                Error::<Test>::StashAlreadyHasCmixId,
+            );
+
+            // Origin is validating
+            assert_noop!(
+                Staking::transfer_cmix_id(Origin::signed(11), 41),
+                Error::<Test>::StashValidating,
+            );
+
+            // Chill
+            assert_ok!(Staking::chill(Origin::signed(10)));
+
+            // Origin is active validator
+            assert_noop!(
+                Staking::transfer_cmix_id(Origin::signed(11), 41),
+                Error::<Test>::StashActiveValidator,
+            );
+        })
+}
+
 ////////////////////////////////////////
 //         Rewards Destination        //
 ////////////////////////////////////////
