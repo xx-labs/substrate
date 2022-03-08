@@ -451,7 +451,7 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	}
 	fn transfer_cmix_id() -> Weight {
 		(83_389_000 as Weight)
-			.saturating_add(T::DbWeight::get().reads(6 as Weight))
+			.saturating_add(T::DbWeight::get().reads(9 as Weight))
 			.saturating_add(T::DbWeight::get().writes(2 as Weight))
 	}
 }
@@ -829,7 +829,7 @@ impl WeightInfo for () {
 	}
 	fn transfer_cmix_id() -> Weight {
 		(83_389_000 as Weight)
-			.saturating_add(RocksDbWeight::get().reads(6 as Weight))
+			.saturating_add(RocksDbWeight::get().reads(9 as Weight))
 			.saturating_add(RocksDbWeight::get().writes(2 as Weight))
 	}
 }

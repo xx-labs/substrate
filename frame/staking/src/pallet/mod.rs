@@ -470,6 +470,11 @@ pub mod pallet {
 	#[pallet::getter(fn offending_validators)]
 	pub type OffendingValidators<T: Config> = StorageValue<_, Vec<(u32, bool)>, ValueQuery>;
 
+	/// True if election is off-chain active, i.e., snapshot was taken
+	/// Election is active.
+	#[pallet::storage]
+	pub(crate) type ElectionActive<T: Config> = StorageValue<_, bool, ValueQuery>;
+
 	/// True if network has been upgraded to this version.
 	/// Storage version of the pallet.
 	///
@@ -680,6 +685,10 @@ pub mod pallet {
 		StashValidating,
 		/// Stash is active validator
 		StashActiveValidator,
+		/// Stash is elected validator for next era
+		StashElectedValidator,
+		/// Election ongoing, can't transfer CMIX ID
+		ElectionOngoing,
 	}
 
 	#[pallet::hooks]
@@ -1658,8 +1667,11 @@ pub mod pallet {
 
 		/// Transfer the CMIX ID of a stash to a destination account.
 		///
+		/// Function is only callable if the Election is NOT active.
+		///
 		/// The origin account must be a stash and cannot be validating.
-		/// Furthermore, it cannot be an validator in the current era.
+		/// Furthermore, it cannot be an validator in the current era, neither
+		/// elected for the next era.
 		/// The destination account must be a stash, without a CMIX ID.
 		///
 		/// The dispatch origin for this call must be _Signed_ by the stash, not the controller.
@@ -1669,7 +1681,8 @@ pub mod pallet {
 		/// ----------
 		/// Weight: O(1)
 		/// DB Weight:
-		/// - Read: Bonded, Ledger, Validators, SessionInterface::validators
+		/// - Read: Bonded, Ledger, ElectionActive, Validators,
+		///         SessionInterface::validators, ActiveEra, ErasValidatorPrefs
 		/// - Write: Ledger
 		/// # </weight>
 		#[pallet::weight(T::WeightInfo::transfer_cmix_id())]
@@ -1685,6 +1698,11 @@ pub mod pallet {
 			// Get both ledgers
 			let mut ledger = <Ledger<T>>::get(&controller).ok_or(Error::<T>::NotController)?;
 			let mut dest_ledger = <Ledger<T>>::get(&dest_controller).ok_or(Error::<T>::NotController)?;
+
+			// Exit early if election is ongoing
+			if ElectionActive::<T>::get() {
+				Err(Error::<T>::ElectionOngoing)?
+			}
 
 			// Ensure origin ledger has a cmix id
 			if ledger.cmix_id.is_none() {
@@ -1703,6 +1721,13 @@ pub mod pallet {
 			let validators = T::SessionInterface::validators();
 			if validators.contains(&ledger.stash) {
 				Err(Error::<T>::StashActiveValidator)?
+			}
+			// Ensure origin stash is not an elected validator for the next era
+			if let Some(active_era) = Self::active_era() {
+				let next_era = active_era.index + 1;
+				if ErasValidatorPrefs::<T>::contains_key(&next_era, &ledger.stash) {
+					Err(Error::<T>::StashElectedValidator)?
+				}
 			}
 
 			// Execute cmix id transfer

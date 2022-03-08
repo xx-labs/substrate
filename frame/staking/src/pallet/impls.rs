@@ -508,6 +508,9 @@ impl<T: Config> Pallet<T> {
 			);
 		}
 
+		// Election is done
+		ElectionActive::<T>::put(false);
+
 		elected_stashes
 	}
 
@@ -906,6 +909,9 @@ impl<T: Config> ElectionDataProvider<T::AccountId, BlockNumberFor<T>> for Pallet
 
 	fn desired_targets() -> data_provider::Result<u32> {
 		Self::register_weight(T::DbWeight::get().reads(1));
+		Self::register_weight(T::DbWeight::get().writes(1));
+		// Election is active off-chain, snapshot was taken
+		ElectionActive::<T>::put(true);
 		Ok(Self::validator_count())
 	}
 

@@ -10,6 +10,7 @@ use frame_support::{
     assert_noop, assert_ok,
     traits::{Currency},
 };
+use frame_election_provider_support::ElectionProvider;
 use mock::*;
 use substrate_test_utils::assert_eq_uvec;
 
@@ -176,7 +177,6 @@ fn calling_set_cmix_id_with_existing_cmix_id_fails() {
 fn transfer_cmix_id_works() {
     let stash_value = 100;
     ExtBuilder::default()
-        .has_stakers(false)
         .build_and_execute(|| {
             let _ = Balances::make_free_balance_be(&10, stash_value);
             let _ = Balances::make_free_balance_be(&12, stash_value);
@@ -241,13 +241,8 @@ fn transfer_cmix_id_works() {
 
 #[test]
 fn check_transfer_cmix_id_errors() {
-    let stash_value = 100;
     ExtBuilder::default()
         .build_and_execute(|| {
-            let _ = Balances::make_free_balance_be(&10, stash_value);
-            let _ = Balances::make_free_balance_be(&12, stash_value);
-            let _ = Balances::make_free_balance_be(&14, stash_value);
-
             // Calling from a non stash account fails
             assert_noop!(
                 Staking::transfer_cmix_id(Origin::signed(10), 41),
@@ -285,6 +280,45 @@ fn check_transfer_cmix_id_errors() {
             assert_noop!(
                 Staking::transfer_cmix_id(Origin::signed(11), 41),
                 Error::<Test>::StashActiveValidator,
+            );
+        })
+}
+
+#[test]
+fn check_transfer_cmix_id_election_ongoing() {
+    ExtBuilder::default()
+        .build_and_execute(|| {
+            // Trigger the election
+            let _ = <Test as Config>::ElectionProvider::elect().ok();
+
+            // Election is ongoing
+            assert_noop!(
+                Staking::transfer_cmix_id(Origin::signed(11), 41),
+                Error::<Test>::ElectionOngoing,
+            );
+        })
+}
+
+#[test]
+fn check_transfer_cmix_id_elected_validator() {
+    ExtBuilder::default()
+        .build_and_execute(|| {
+            // Bond extra coins to get validator 31 elected
+            assert_ok!(Staking::bond_extra(Origin::signed(31), 1000));
+
+            // Advance sessions
+            start_session(1);
+            start_session(2);
+
+            // Election happened, next validators should be available
+
+            // Stop validating
+            assert_ok!(Staking::chill(Origin::signed(30)));
+
+            // Stash is elected validator
+            assert_noop!(
+                Staking::transfer_cmix_id(Origin::signed(31), 41),
+                Error::<Test>::StashElectedValidator,
             );
         })
 }
