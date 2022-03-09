@@ -494,8 +494,14 @@ impl<T: Config> Pallet<T> {
 		<ErasTotalStake<T>>::insert(&new_planned_era, total_stake);
 
 		// Collect the pref of all winners.
+		let min_comm = MinValidatorCommission::<T>::get();
 		for stash in &elected_stashes {
-			let pref = Self::validators(stash);
+			let mut pref = Self::validators(stash);
+			// Ensure minimum commission in case a validator chills
+			// after the election snapshot but before the election happens
+			if pref.commission < min_comm {
+				pref.commission = min_comm
+			}
 			<ErasValidatorPrefs<T>>::insert(&new_planned_era, stash, pref);
 		}
 
