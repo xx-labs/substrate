@@ -35,10 +35,6 @@ sp-std = { version = "4.0.0-dev", default-features = false, path = "../../../pri
 sp-api = { version = "4.0.0-dev", default-features = false, path = "../../../primitives/api" }
 sp-runtime = { version = "4.0.0-dev", default-features = false, path = "../../../primitives/runtime" }
 sp-staking = { version = "4.0.0-dev", default-features = false, path = "../../../primitives/staking" }
-<<<<<<< HEAD
-sp-keyring = { version = "4.0.0-dev", optional = true, path = "../../../primitives/keyring" }
-=======
->>>>>>> 4bc2af13c (wasm-builder: Support latest nightly (#10837))
 sp-session = { version = "4.0.0-dev", default-features = false, path = "../../../primitives/session" }
 sp-transaction-pool = { version = "4.0.0-dev", default-features = false, path = "../../../primitives/transaction-pool" }
 sp-version = { version = "4.0.0-dev", default-features = false, path = "../../../primitives/version" }
@@ -173,12 +169,7 @@ std = [
 	"log/std",
 	"frame-try-runtime/std",
 	"sp-npos-elections/std",
-<<<<<<< HEAD
-  "sp-io/std"
-=======
 	"sp-io/std",
-	"pallet-child-bounties/std",
->>>>>>> 4bc2af13c (wasm-builder: Support latest nightly (#10837))
 ]
 runtime-benchmarks = [
 	"frame-benchmarking",
