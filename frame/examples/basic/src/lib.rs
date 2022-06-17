@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2017-2021 Parity Technologies (UK) Ltd.
+// Copyright (C) 2017-2022 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -525,7 +525,7 @@ pub mod pallet {
 			});
 
 			// Let's deposit an event to let the outside world know this happened.
-			Self::deposit_event(Event::AccumulateDummy(increase_by));
+			Self::deposit_event(Event::AccumulateDummy { balance: increase_by });
 
 			// All good, no refund.
 			Ok(())
@@ -557,7 +557,7 @@ pub mod pallet {
 			// Put the new value into storage.
 			<Dummy<T>>::put(new_value);
 
-			Self::deposit_event(Event::SetDummy(new_value));
+			Self::deposit_event(Event::SetDummy { balance: new_value });
 
 			// All good, no refund.
 			Ok(())
@@ -574,9 +574,16 @@ pub mod pallet {
 	pub enum Event<T: Config> {
 		// Just a normal `enum`, here's a dummy event to ensure it compiles.
 		/// Dummy event, just here so there's a generic type that's used.
-		AccumulateDummy(BalanceOf<T>),
-		SetDummy(BalanceOf<T>),
-		SetBar(T::AccountId, BalanceOf<T>),
+		AccumulateDummy {
+			balance: BalanceOf<T>,
+		},
+		SetDummy {
+			balance: BalanceOf<T>,
+		},
+		SetBar {
+			account: T::AccountId,
+			balance: BalanceOf<T>,
+		},
 	}
 
 	// pallet::storage attributes allow for type-safe usage of the Substrate storage database,
@@ -724,6 +731,16 @@ where
 		Ok(())
 	}
 
+	fn pre_dispatch(
+		self,
+		who: &Self::AccountId,
+		call: &Self::Call,
+		info: &DispatchInfoOf<Self::Call>,
+		len: usize,
+	) -> Result<Self::Pre, TransactionValidityError> {
+		self.validate(who, call, info, len).map(|_| ())
+	}
+
 	fn validate(
 		&self,
 		_who: &Self::AccountId,
@@ -741,8 +758,8 @@ where
 			Some(Call::set_dummy { .. }) => {
 				sp_runtime::print("set_dummy was received.");
 
-				let mut valid_tx = ValidTransaction::default();
-				valid_tx.priority = Bounded::max_value();
+				let valid_tx =
+					ValidTransaction { priority: Bounded::max_value(), ..Default::default() };
 				Ok(valid_tx)
 			},
 			_ => Ok(Default::default()),

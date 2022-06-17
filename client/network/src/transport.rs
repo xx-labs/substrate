@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2018-2021 Parity Technologies (UK) Ltd.
+// Copyright (C) 2018-2022 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -82,11 +82,11 @@ pub fn build_transport(
 				rare panic here is basically zero");
 
 			// Legacy noise configurations for backward compatibility.
-			let mut noise_legacy = noise::LegacyConfig::default();
-			noise_legacy.recv_legacy_handshake = true;
+			let noise_legacy =
+				noise::LegacyConfig { recv_legacy_handshake: true, ..Default::default() };
 
 			let mut xx_config = noise::NoiseConfig::xx(noise_keypair);
-			xx_config.set_legacy_config(noise_legacy.clone());
+			xx_config.set_legacy_config(noise_legacy);
 			xx_config.into_authenticated()
 		};
 

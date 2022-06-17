@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2019-2021 Parity Technologies (UK) Ltd.
+// Copyright (C) 2019-2022 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -84,6 +84,8 @@ pub use sp_core::NativeOrEncoded;
 use sp_core::OpaqueMetadata;
 #[doc(hidden)]
 pub use sp_core::{offchain, ExecutionContext};
+#[cfg(feature = "std")]
+pub use sp_runtime::StateVersion;
 #[doc(hidden)]
 pub use sp_runtime::{
 	generic::BlockId,
@@ -269,6 +271,7 @@ pub use sp_api_proc_macro::decl_runtime_apis;
 ///     // Here we are exposing the runtime api versions.
 ///     apis: RUNTIME_API_VERSIONS,
 ///     transaction_version: 1,
+///     state_version: 1,
 /// };
 ///
 /// # fn main() {}
@@ -419,7 +422,7 @@ pub trait ConstructRuntimeApi<Block: BlockT, C: CallApiAt<Block>> {
 	type RuntimeApi: ApiExt<Block>;
 
 	/// Construct an instance of the runtime api.
-	fn construct_runtime_api<'a>(call: &'a C) -> ApiRef<'a, Self::RuntimeApi>;
+	fn construct_runtime_api(call: &C) -> ApiRef<Self::RuntimeApi>;
 }
 
 /// Init the [`RuntimeLogger`](sp_runtime::runtime_logger::RuntimeLogger).
@@ -551,12 +554,11 @@ pub trait CallApiAt<Block: BlockT> {
 	/// Calls the given api function with the given encoded arguments at the given block and returns
 	/// the encoded result.
 	fn call_api_at<
-		'a,
 		R: Encode + Decode + PartialEq,
 		NC: FnOnce() -> result::Result<R, ApiError> + UnwindSafe,
 	>(
 		&self,
-		params: CallApiAtParams<'a, Block, NC, Self::StateBackend>,
+		params: CallApiAtParams<Block, NC, Self::StateBackend>,
 	) -> Result<NativeOrEncoded<R>, ApiError>;
 
 	/// Returns the runtime version at the given block.
@@ -601,7 +603,7 @@ pub trait ProvideRuntimeApi<Block: BlockT> {
 	/// call to an api function, will `commit` its changes to an internal buffer. Otherwise,
 	/// the modifications will be `discarded`. The modifications will not be applied to the
 	/// storage, even on a `commit`.
-	fn runtime_api<'a>(&'a self) -> ApiRef<'a, Self::Api>;
+	fn runtime_api(&self) -> ApiRef<Self::Api>;
 }
 
 /// Something that provides information about a runtime api.
@@ -654,53 +656,13 @@ pub fn deserialize_runtime_api_info(bytes: [u8; RUNTIME_API_INFO_SIZE]) -> ([u8;
 	(id, version)
 }
 
-#[derive(codec::Encode, codec::Decode)]
-pub struct OldRuntimeVersion {
-	pub spec_name: RuntimeString,
-	pub impl_name: RuntimeString,
-	pub authoring_version: u32,
-	pub spec_version: u32,
-	pub impl_version: u32,
-	pub apis: ApisVec,
-}
-
-impl From<OldRuntimeVersion> for RuntimeVersion {
-	fn from(x: OldRuntimeVersion) -> Self {
-		Self {
-			spec_name: x.spec_name,
-			impl_name: x.impl_name,
-			authoring_version: x.authoring_version,
-			spec_version: x.spec_version,
-			impl_version: x.impl_version,
-			apis: x.apis,
-			transaction_version: 1,
-		}
-	}
-}
-
-impl From<RuntimeVersion> for OldRuntimeVersion {
-	fn from(x: RuntimeVersion) -> Self {
-		Self {
-			spec_name: x.spec_name,
-			impl_name: x.impl_name,
-			authoring_version: x.authoring_version,
-			spec_version: x.spec_version,
-			impl_version: x.impl_version,
-			apis: x.apis,
-		}
-	}
-}
-
 decl_runtime_apis! {
 	/// The `Core` runtime api that every Substrate runtime needs to implement.
 	#[core_trait]
-	#[api_version(3)]
+	#[api_version(4)]
 	pub trait Core {
 		/// Returns the version of the runtime.
 		fn version() -> RuntimeVersion;
-		/// Returns the version of the runtime.
-		#[changed_in(3)]
-		fn version() -> OldRuntimeVersion;
 		/// Execute the given block.
 		fn execute_block(block: Block);
 		/// Initialize a block with the given header.

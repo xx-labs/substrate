@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2017-2021 Parity Technologies (UK) Ltd.
+// Copyright (C) 2017-2022 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -26,7 +26,7 @@ use sp_core::{
 use sp_runtime::{
 	generic::BlockId,
 	traits::{Block as BlockT, HashFor, Header as HeaderT, NumberFor, Zero},
-	Justification, Justifications, Storage,
+	Justification, Justifications, StateVersion, Storage,
 };
 use sp_state_machine::{
 	Backend as StateBackend, ChildStorageCollection, InMemoryBackend, IndexOperation,
@@ -166,23 +166,19 @@ impl<Block: BlockT> Blockchain<Block> {
 		body: Option<Vec<<Block as BlockT>::Extrinsic>>,
 		new_state: NewBlockState,
 	) -> sp_blockchain::Result<()> {
-		let number = header.number().clone();
+		let number = *header.number();
 		if new_state.is_best() {
 			self.apply_head(&header)?;
 		}
 
 		{
 			let mut storage = self.storage.write();
-			storage
-				.leaves
-				.import(hash.clone(), number.clone(), header.parent_hash().clone());
-			storage
-				.blocks
-				.insert(hash.clone(), StoredBlock::new(header, body, justifications));
+			storage.leaves.import(hash, number, header.parent_hash().clone());
+			storage.blocks.insert(hash, StoredBlock::new(header, body, justifications));
 
 			if let NewBlockState::Final = new_state {
 				storage.finalized_hash = hash;
-				storage.finalized_number = number.clone();
+				storage.finalized_number = number;
 			}
 
 			if number == Zero::zero() {
@@ -266,9 +262,9 @@ impl<Block: BlockT> Blockchain<Block> {
 			}
 		}
 
-		storage.best_hash = hash.clone();
-		storage.best_number = number.clone();
-		storage.hashes.insert(number.clone(), hash.clone());
+		storage.best_hash = hash;
+		storage.best_number = *number;
+		storage.hashes.insert(*number, hash);
 
 		Ok(())
 	}
@@ -362,7 +358,7 @@ impl<Block: BlockT> HeaderBackend<Block> for Blockchain<Block> {
 			finalized_hash: storage.finalized_hash,
 			finalized_number: storage.finalized_number,
 			finalized_state: if storage.finalized_hash != Default::default() {
-				Some((storage.finalized_hash.clone(), storage.finalized_number))
+				Some((storage.finalized_hash, storage.finalized_number))
 			} else {
 				None
 			},
@@ -428,20 +424,30 @@ impl<Block: BlockT> blockchain::Backend<Block> for Blockchain<Block> {
 
 	fn justifications(&self, id: BlockId<Block>) -> sp_blockchain::Result<Option<Justifications>> {
 		Ok(self.id(id).and_then(|hash| {
-			self.storage
-				.read()
-				.blocks
-				.get(&hash)
-				.and_then(|b| b.justifications().map(|x| x.clone()))
+			self.storage.read().blocks.get(&hash).and_then(|b| b.justifications().cloned())
 		}))
 	}
 
 	fn last_finalized(&self) -> sp_blockchain::Result<Block::Hash> {
-		Ok(self.storage.read().finalized_hash.clone())
+		Ok(self.storage.read().finalized_hash)
 	}
 
 	fn leaves(&self) -> sp_blockchain::Result<Vec<Block::Hash>> {
 		Ok(self.storage.read().leaves.hashes())
+	}
+
+	fn displaced_leaves_after_finalizing(
+		&self,
+		block_number: NumberFor<Block>,
+	) -> sp_blockchain::Result<Vec<Block::Hash>> {
+		Ok(self
+			.storage
+			.read()
+			.leaves
+			.displaced_by_finalize_height(block_number)
+			.leaves()
+			.cloned()
+			.collect::<Vec<_>>())
 	}
 
 	fn children(&self, _parent_hash: Block::Hash) -> sp_blockchain::Result<Vec<Block::Hash>> {
@@ -506,6 +512,7 @@ where
 		&mut self,
 		storage: Storage,
 		commit: bool,
+		state_version: StateVersion,
 	) -> sp_blockchain::Result<Block::Hash> {
 		check_genesis_storage(&storage)?;
 
@@ -519,6 +526,7 @@ where
 		let (root, transaction) = self.old_state.full_storage_root(
 			storage.top.iter().map(|(k, v)| (k.as_ref(), Some(v.as_ref()))),
 			child_delta,
+			state_version,
 		);
 
 		if commit {
@@ -566,12 +574,17 @@ where
 		&mut self,
 		storage: Storage,
 		commit: bool,
+		state_version: StateVersion,
 	) -> sp_blockchain::Result<Block::Hash> {
-		self.apply_storage(storage, commit)
+		self.apply_storage(storage, commit, state_version)
 	}
 
-	fn reset_storage(&mut self, storage: Storage) -> sp_blockchain::Result<Block::Hash> {
-		self.apply_storage(storage, true)
+	fn reset_storage(
+		&mut self,
+		storage: Storage,
+		state_version: StateVersion,
+	) -> sp_blockchain::Result<Block::Hash> {
+		self.apply_storage(storage, true, state_version)
 	}
 
 	fn insert_aux<I>(&mut self, ops: I) -> sp_blockchain::Result<()>
@@ -782,6 +795,10 @@ where
 	fn get_import_lock(&self) -> &RwLock<()> {
 		&self.import_lock
 	}
+
+	fn requires_full_sync(&self) -> bool {
+		false
+	}
 }
 
 impl<Block: BlockT> backend::LocalBackend<Block> for Backend<Block> where Block::Hash: Ord {}
@@ -789,15 +806,15 @@ impl<Block: BlockT> backend::LocalBackend<Block> for Backend<Block> where Block:
 /// Check that genesis storage is valid.
 pub fn check_genesis_storage(storage: &Storage) -> sp_blockchain::Result<()> {
 	if storage.top.iter().any(|(k, _)| well_known_keys::is_child_storage_key(k)) {
-		return Err(sp_blockchain::Error::InvalidState.into())
+		return Err(sp_blockchain::Error::InvalidState)
 	}
 
 	if storage
 		.children_default
 		.keys()
-		.any(|child_key| !well_known_keys::is_child_storage_key(&child_key))
+		.any(|child_key| !well_known_keys::is_child_storage_key(child_key))
 	{
-		return Err(sp_blockchain::Error::InvalidState.into())
+		return Err(sp_blockchain::Error::InvalidState)
 	}
 
 	Ok(())

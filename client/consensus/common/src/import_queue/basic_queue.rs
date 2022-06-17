@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2017-2021 Parity Technologies (UK) Ltd.
+// Copyright (C) 2017-2022 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -303,11 +303,11 @@ impl<B: BlockT> BlockImportWorker<B> {
 				.map_err(|e| {
 					debug!(
 						target: "sync",
-						"Justification import failed with {:?} for hash: {:?} number: {:?} coming from node: {:?}",
-						e,
+						"Justification import failed for hash = {:?} with number = {:?} coming from node = {:?} with error: {}",
 						hash,
 						number,
 						who,
+						e,
 					);
 					e
 				})
@@ -374,7 +374,7 @@ async fn import_many_blocks<B: BlockT, V: Verifier<B>, Transaction: Send + 'stat
 			},
 		};
 
-		let block_number = block.header.as_ref().map(|h| h.number().clone());
+		let block_number = block.header.as_ref().map(|h| *h.number());
 		let block_hash = block.hash;
 		let import_result = if has_error {
 			Err(BlockImportError::Cancelled)
@@ -382,7 +382,7 @@ async fn import_many_blocks<B: BlockT, V: Verifier<B>, Transaction: Send + 'stat
 			// The actual import.
 			import_single_block_metered(
 				import_handle,
-				blocks_origin.clone(),
+				blocks_origin,
 				block,
 				verifier,
 				metrics.clone(),

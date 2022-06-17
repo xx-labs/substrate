@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2017-2021 Parity Technologies (UK) Ltd.
+// Copyright (C) 2017-2022 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -51,12 +51,13 @@ use sc_network::{
 	block_request_handler::BlockRequestHandler,
 	config::{
 		MultiaddrWithPeerId, NetworkConfiguration, NonDefaultSetConfig, NonReservedPeerMode,
-		ProtocolConfig, ProtocolId, Role, SyncMode, TransportConfig,
+		ProtocolConfig, Role, SyncMode, TransportConfig,
 	},
 	light_client_requests::handler::LightClientRequestHandler,
 	state_request_handler::StateRequestHandler,
 	warp_request_handler, Multiaddr, NetworkService, NetworkWorker,
 };
+pub use sc_network_common::config::ProtocolId;
 use sc_service::client::Client;
 use sp_blockchain::{
 	well_known_cache_keys::{self, Id as CacheKeyId},
@@ -86,7 +87,6 @@ type AuthorityId = sp_consensus_babe::AuthorityId;
 #[derive(Clone)]
 pub struct PassThroughVerifier {
 	finalized: bool,
-	fork_choice: ForkChoiceStrategy,
 }
 
 impl PassThroughVerifier {
@@ -94,15 +94,7 @@ impl PassThroughVerifier {
 	///
 	/// Every verified block will use `finalized` for the `BlockImportParams`.
 	pub fn new(finalized: bool) -> Self {
-		Self { finalized, fork_choice: ForkChoiceStrategy::LongestChain }
-	}
-
-	/// Create a new instance.
-	///
-	/// Every verified block will use `finalized` for the `BlockImportParams` and
-	/// the given [`ForkChoiceStrategy`].
-	pub fn new_with_fork_choice(finalized: bool, fork_choice: ForkChoiceStrategy) -> Self {
-		Self { finalized, fork_choice }
+		Self { finalized }
 	}
 }
 
@@ -121,8 +113,10 @@ impl<B: BlockT> Verifier<B> for PassThroughVerifier {
 					.or_else(|| l.try_as_raw(OpaqueDigestItemId::Consensus(b"babe")))
 			})
 			.map(|blob| vec![(well_known_cache_keys::AUTHORITIES, blob.to_vec())]);
+		if block.fork_choice.is_none() {
+			block.fork_choice = Some(ForkChoiceStrategy::LongestChain);
+		};
 		block.finalized = self.finalized;
-		block.fork_choice = Some(self.fork_choice.clone());
 		Ok((block, maybe_keys))
 	}
 }
@@ -230,7 +224,7 @@ pub struct Peer<D, BlockImport> {
 	block_import: BlockImportAdapter<BlockImport>,
 	select_chain: Option<LongestChain<substrate_test_runtime_client::Backend, Block>>,
 	backend: Option<Arc<substrate_test_runtime_client::Backend>>,
-	network: NetworkWorker<Block, <Block as BlockT>::Hash>,
+	network: NetworkWorker<Block, <Block as BlockT>::Hash, PeersFullClient>,
 	imported_blocks_stream: Pin<Box<dyn Stream<Item = BlockImportNotification<Block>> + Send>>,
 	finality_notification_stream: Pin<Box<dyn Stream<Item = FinalityNotification<Block>> + Send>>,
 	listen_addr: Multiaddr,
@@ -243,7 +237,7 @@ where
 {
 	/// Get this peer ID.
 	pub fn id(&self) -> PeerId {
-		self.network.service().local_peer_id().clone()
+		*self.network.service().local_peer_id()
 	}
 
 	/// Returns true if we're major syncing.
@@ -309,12 +303,39 @@ where
 			false,
 			true,
 			true,
+			ForkChoiceStrategy::LongestChain,
+		)
+	}
+
+	/// Add blocks to the peer -- edit the block before adding and use custom fork choice rule.
+	pub fn generate_blocks_with_fork_choice<F>(
+		&mut self,
+		count: usize,
+		origin: BlockOrigin,
+		edit_block: F,
+		fork_choice: ForkChoiceStrategy,
+	) -> H256
+	where
+		F: FnMut(
+			BlockBuilder<Block, PeersFullClient, substrate_test_runtime_client::Backend>,
+		) -> Block,
+	{
+		let best_hash = self.client.info().best_hash;
+		self.generate_blocks_at(
+			BlockId::Hash(best_hash),
+			count,
+			origin,
+			edit_block,
+			false,
+			true,
+			true,
+			fork_choice,
 		)
 	}
 
 	/// Add blocks to the peer -- edit the block before adding. The chain will
 	/// start at the given block iD.
-	fn generate_blocks_at<F>(
+	pub fn generate_blocks_at<F>(
 		&mut self,
 		at: BlockId<Block>,
 		count: usize,
@@ -323,6 +344,7 @@ where
 		headers_only: bool,
 		inform_sync_about_new_best_block: bool,
 		announce_block: bool,
+		fork_choice: ForkChoiceStrategy,
 	) -> H256
 	where
 		F: FnMut(
@@ -346,6 +368,7 @@ where
 			let header = block.header.clone();
 			let mut import_block = BlockImportParams::new(origin, header.clone());
 			import_block.body = if headers_only { None } else { Some(block.extrinsics) };
+			import_block.fork_choice = Some(fork_choice);
 			let (import_block, cache) =
 				futures::executor::block_on(self.verifier.verify(import_block)).unwrap();
 			let cache = if let Some(cache) = cache {
@@ -365,7 +388,7 @@ where
 		if inform_sync_about_new_best_block {
 			self.network.new_best_block_imported(
 				at,
-				full_client.header(&BlockId::Hash(at)).ok().flatten().unwrap().number().clone(),
+				*full_client.header(&BlockId::Hash(at)).ok().flatten().unwrap().number(),
 			);
 		}
 		at
@@ -436,12 +459,13 @@ where
 						nonce,
 					};
 					builder.push(transfer.into_signed_tx()).unwrap();
-					nonce = nonce + 1;
+					nonce += 1;
 					builder.build().unwrap().block
 				},
 				headers_only,
 				inform_sync_about_new_best_block,
 				announce_block,
+				ForkChoiceStrategy::LongestChain,
 			)
 		} else {
 			self.generate_blocks_at(
@@ -452,6 +476,7 @@ where
 				headers_only,
 				inform_sync_about_new_best_block,
 				announce_block,
+				ForkChoiceStrategy::LongestChain,
 			)
 		}
 	}
@@ -470,11 +495,11 @@ where
 
 	/// Get a reference to the network service.
 	pub fn network_service(&self) -> &Arc<NetworkService<Block, <Block as BlockT>::Hash>> {
-		&self.network.service()
+		self.network.service()
 	}
 
 	/// Get a reference to the network worker.
-	pub fn network(&self) -> &NetworkWorker<Block, <Block as BlockT>::Hash> {
+	pub fn network(&self) -> &NetworkWorker<Block, <Block as BlockT>::Hash, PeersFullClient> {
 		&self.network
 	}
 
@@ -642,6 +667,8 @@ impl<B: BlockT> warp_request_handler::WarpSyncProvider<B> for TestWarpSyncProvid
 #[derive(Default)]
 pub struct FullPeerConfig {
 	/// Pruning window size.
+	///
+	/// NOTE: only finalized blocks are subject for removal!
 	pub keep_blocks: Option<u32>,
 	/// Block announce validator.
 	pub block_announce_validator: Option<Box<dyn BlockAnnounceValidator<Block> + Send + Sync>>,
@@ -777,7 +804,7 @@ where
 			let addrs = connect_to
 				.iter()
 				.map(|v| {
-					let peer_id = self.peer(*v).network_service().local_peer_id().clone();
+					let peer_id = *self.peer(*v).network_service().local_peer_id();
 					let multiaddr = self.peer(*v).listen_addr.clone();
 					MultiaddrWithPeerId { peer_id, multiaddr }
 				})
@@ -844,10 +871,8 @@ where
 
 		self.mut_peers(move |peers| {
 			for peer in peers.iter_mut() {
-				peer.network.add_known_address(
-					network.service().local_peer_id().clone(),
-					listen_addr.clone(),
-				);
+				peer.network
+					.add_known_address(*network.service().local_peer_id(), listen_addr.clone());
 			}
 
 			let imported_blocks_stream = Box::pin(client.import_notification_stream().fuse());
@@ -962,7 +987,7 @@ where
 	/// Polls the testnet. Processes all the pending actions.
 	fn poll(&mut self, cx: &mut FutureContext) {
 		self.mut_peers(|peers| {
-			for (i, peer) in peers.into_iter().enumerate() {
+			for (i, peer) in peers.iter_mut().enumerate() {
 				trace!(target: "sync", "-- Polling {}: {}", i, peer.id());
 				if let Poll::Ready(()) = peer.network.poll_unpin(cx) {
 					panic!("NetworkWorker has terminated unexpectedly.")
@@ -976,14 +1001,10 @@ where
 					peer.network.service().announce_block(notification.hash, None);
 				}
 
-				// We poll `finality_notification_stream`, but we only take the last event.
-				let mut last = None;
-				while let Poll::Ready(Some(item)) =
+				// We poll `finality_notification_stream`.
+				while let Poll::Ready(Some(notification)) =
 					peer.finality_notification_stream.as_mut().poll_next(cx)
 				{
-					last = Some(item);
-				}
-				if let Some(notification) = last {
 					peer.network.on_block_finalized(notification.hash, notification.header);
 				}
 			}
@@ -993,14 +1014,6 @@ where
 
 pub struct TestNet {
 	peers: Vec<Peer<(), PeersClient>>,
-	fork_choice: ForkChoiceStrategy,
-}
-
-impl TestNet {
-	/// Create a `TestNet` that used the given fork choice rule.
-	pub fn with_fork_choice(fork_choice: ForkChoiceStrategy) -> Self {
-		Self { peers: Vec::new(), fork_choice }
-	}
 }
 
 impl TestNetFactory for TestNet {
@@ -1010,7 +1023,7 @@ impl TestNetFactory for TestNet {
 
 	/// Create new test network with peers and given config.
 	fn from_config(_config: &ProtocolConfig) -> Self {
-		TestNet { peers: Vec::new(), fork_choice: ForkChoiceStrategy::LongestChain }
+		TestNet { peers: Vec::new() }
 	}
 
 	fn make_verifier(
@@ -1019,7 +1032,7 @@ impl TestNetFactory for TestNet {
 		_config: &ProtocolConfig,
 		_peer_data: &(),
 	) -> Self::Verifier {
-		PassThroughVerifier::new_with_fork_choice(false, self.fork_choice.clone())
+		PassThroughVerifier::new(false)
 	}
 
 	fn make_block_import(
@@ -1064,7 +1077,7 @@ impl JustificationImport<Block> for ForceFinalized {
 	) -> Result<(), Self::Error> {
 		self.0
 			.finalize_block(BlockId::Hash(hash), Some(justification), true)
-			.map_err(|_| ConsensusError::InvalidJustification.into())
+			.map_err(|_| ConsensusError::InvalidJustification)
 	}
 }
 

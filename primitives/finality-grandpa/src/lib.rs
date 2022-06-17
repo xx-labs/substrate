@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2018-2021 Parity Technologies (UK) Ltd.
+// Copyright (C) 2018-2022 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -59,7 +59,7 @@ pub const GRANDPA_ENGINE_ID: ConsensusEngineId = *b"FRNK";
 
 /// The storage key for the current set of weighted Grandpa authorities.
 /// The value stored is an encoded VersionedAuthorityList.
-pub const GRANDPA_AUTHORITIES_KEY: &'static [u8] = b":grandpa_authorities";
+pub const GRANDPA_AUTHORITIES_KEY: &[u8] = b":grandpa_authorities";
 
 /// The weight of an authority.
 pub type AuthorityWeight = u64;

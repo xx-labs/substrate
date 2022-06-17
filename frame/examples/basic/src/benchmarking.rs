@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2019-2021 Parity Technologies (UK) Ltd.
+// Copyright (C) 2019-2022 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -63,7 +63,7 @@ benchmarks! {
 		}
 	}: {
 		// The benchmark execution phase could also be a closure with custom code
-		m.sort();
+		m.sort_unstable();
 	}
 
 	// This line generates test cases for benchmarking, and could be run by:

@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2017-2021 Parity Technologies (UK) Ltd.
+// Copyright (C) 2017-2022 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -129,6 +129,7 @@ pub mod pallet {
 
 	#[pallet::pallet]
 	#[pallet::generate_store(pub(super) trait Store)]
+	#[pallet::without_storage_info]
 	pub struct Pallet<T>(_);
 
 	#[pallet::hooks]
@@ -169,7 +170,7 @@ pub mod pallet {
 
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
-		/// Index and store data on chain. Minimum data size is 1 bytes, maximum is
+		/// Index and store data off chain. Minimum data size is 1 bytes, maximum is
 		/// `MaxTransactionSize`. Data will be removed after `STORAGE_PERIOD` blocks, unless `renew`
 		/// is called. # <weight>
 		/// - n*log(n) of data size, as all data is pushed to an in-memory trie.
@@ -188,11 +189,11 @@ pub mod pallet {
 			// Chunk data and compute storage root
 			let chunk_count = num_chunks(data.len() as u32);
 			let chunks = data.chunks(CHUNK_SIZE).map(|c| c.to_vec()).collect();
-			let root = sp_io::trie::blake2_256_ordered_root(chunks);
+			let root = sp_io::trie::blake2_256_ordered_root(chunks, sp_runtime::StateVersion::V1);
 
 			let content_hash = sp_io::hashing::blake2_256(&data);
-			let extrinsic_index = <frame_system::Pallet<T>>::extrinsic_index()
-				.ok_or_else(|| Error::<T>::BadContext)?;
+			let extrinsic_index =
+				<frame_system::Pallet<T>>::extrinsic_index().ok_or(Error::<T>::BadContext)?;
 			sp_io::transaction_index::index(extrinsic_index, data.len() as u32, content_hash);
 
 			let mut index = 0;
@@ -210,7 +211,7 @@ pub mod pallet {
 				});
 				Ok(())
 			})?;
-			Self::deposit_event(Event::Stored(index));
+			Self::deposit_event(Event::Stored { index });
 			Ok(())
 		}
 
@@ -251,7 +252,7 @@ pub mod pallet {
 				});
 				Ok(())
 			})?;
-			Self::deposit_event(Event::Renewed(index));
+			Self::deposit_event(Event::Renewed { index });
 			Ok(().into())
 		}
 
@@ -286,13 +287,12 @@ pub mod pallet {
 						Ok(index) => index,
 						Err(index) => index,
 					};
-					let info =
-						infos.get(index).ok_or_else(|| Error::<T>::MissingStateData)?.clone();
+					let info = infos.get(index).ok_or(Error::<T>::MissingStateData)?.clone();
 					let chunks = num_chunks(info.size);
 					let prev_chunks = info.block_chunks - chunks;
 					(info, selected_chunk_index - prev_chunks)
 				},
-				None => Err(Error::<T>::MissingStateData)?,
+				None => return Err(Error::<T>::MissingStateData.into()),
 			};
 			ensure!(
 				sp_io::trie::blake2_256_verify_proof(
@@ -300,6 +300,7 @@ pub mod pallet {
 					&proof.proof,
 					&encode_index(chunk_index),
 					&proof.chunk,
+					sp_runtime::StateVersion::V1,
 				),
 				Error::<T>::InvalidProof
 			);
@@ -313,9 +314,9 @@ pub mod pallet {
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
 	pub enum Event<T: Config> {
 		/// Stored data under specified index.
-		Stored(u32),
+		Stored { index: u32 },
 		/// Renewed data under specified index.
-		Renewed(u32),
+		Renewed { index: u32 },
 		/// Storage proof was successfully checked.
 		ProofChecked,
 	}
