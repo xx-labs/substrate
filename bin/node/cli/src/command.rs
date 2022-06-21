@@ -57,7 +57,6 @@ impl SubstrateCli for Cli {
 	}
 
 	fn load_spec(&self, id: &str) -> std::result::Result<Box<dyn sc_service::ChainSpec>, String> {
-		log::info!("Loading spec");
 		let spec = match id {
 			"" =>
 				return Err(
@@ -82,18 +81,10 @@ impl SubstrateCli for Cli {
 /// Parse command line arguments into service configuration.
 pub fn run() -> Result<()> {
 	let cli = Cli::from_args();
-	log::info!("Built CLI");
 
 	match &cli.subcommand {
 		None => {
 			let runner = cli.create_runner(&cli.run)?;
-			if log::log_enabled!(log::Level::Info) {
-				std::println!("Info enabled, should work");
-			} else {
-				std::println!("Not working");
-			};
-			std::println!("{}", log::__log_module_path!());
-			log::info!("Running node");
 			runner.run_node_until_exit(|config| async move {
 				service::new_full(config, cli.no_hardware_benchmarks)
 					.map_err(sc_cli::Error::Service)

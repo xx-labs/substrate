@@ -154,7 +154,6 @@ where
 
 	let max_level_hint = Layer::<FmtSubscriber>::max_level_hint(&env_filter);
 	let max_level = to_log_level_filter(max_level_hint);
-	std::println!("Max level: {}", max_level);
 
 	tracing_log::LogTracer::builder()
 		.with_max_level(max_level)
@@ -181,8 +180,6 @@ where
 	let builder = FmtSubscriber::builder().with_env_filter(env_filter);
 
 	let builder = builder.with_span_events(format::FmtSpan::NONE);
-
-	std::println!("Builder: {:?}", builder);
 
 	let builder = builder.with_writer(MakeStderrWriter::default());
 
@@ -266,7 +263,6 @@ impl LoggerBuilder {
 	pub fn init(self) -> Result<()> {
 		if let Some((tracing_receiver, profiling_targets)) = self.profiling {
 			if self.log_reloading {
-				std::println!("HERE 1");
 				let subscriber = prepare_subscriber(
 					&self.directives,
 					Some(&profiling_targets),
@@ -285,7 +281,6 @@ impl LoggerBuilder {
 
 				Ok(())
 			} else {
-				std::println!("HERE 2");
 				let subscriber = prepare_subscriber(
 					&self.directives,
 					Some(&profiling_targets),
@@ -305,7 +300,6 @@ impl LoggerBuilder {
 				Ok(())
 			}
 		} else if self.log_reloading {
-			std::println!("HERE 3");
 			let subscriber = prepare_subscriber(
 				&self.directives,
 				None,
@@ -318,7 +312,6 @@ impl LoggerBuilder {
 
 			Ok(())
 		} else {
-			std::println!("HERE 4");
 			let subscriber = prepare_subscriber(
 				&self.directives,
 				None,

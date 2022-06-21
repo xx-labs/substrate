@@ -639,10 +639,8 @@ pub trait CliConfiguration<DCV: DefaultConfigurationValues = ()>: Sized {
 	where
 		F: FnOnce(&mut LoggerBuilder, &Configuration),
 	{
-		std::println!("Set panic handler");
 		sp_panic_handler::set(support_url, impl_version);
 
-		std::println!("New logger");
 		let mut logger = LoggerBuilder::new(self.log_filters()?);
 		logger
 			.with_log_reloading(self.enable_log_reloading()?)
@@ -658,12 +656,9 @@ pub trait CliConfiguration<DCV: DefaultConfigurationValues = ()>: Sized {
 		}
 
 		// Call hook for custom profiling setup.
-		std::println!("Logger hook");
 		logger_hook(&mut logger, config);
 
-		std::println!("Before logger init");
 		logger.init()?;
-		std::println!("After logger init");
 
 		if let Some(new_limit) = fdlimit::raise_fd_limit() {
 			if new_limit < RECOMMENDED_OPEN_FILE_DESCRIPTOR_LIMIT {
