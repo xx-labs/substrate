@@ -202,8 +202,18 @@ pub trait SubstrateCli: Sized {
 	) -> error::Result<Runner<Self>> {
 		let tokio_runtime = build_runtime()?;
 		let config = command.create_configuration(self, tokio_runtime.handle().clone())?;
-
+		log::info!("Before Init");
+		std::println!("Before Init");
+		std::println!("Config: {}, {}, {}, {:?}, {}",
+			command.log_filters()?,
+			command.enable_log_reloading()?,
+			command.detailed_log_output()?,
+			command.tracing_targets()?,
+			command.disable_log_color()?,
+		);
 		command.init(&Self::support_url(), &Self::impl_version(), |_, _| {}, &config)?;
+		log::info!("After Init");
+		std::println!("After Init");
 		Runner::new(config, tokio_runtime)
 	}
 

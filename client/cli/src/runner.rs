@@ -144,6 +144,7 @@ impl<C: SubstrateCli> Runner<C> {
 		F: Future<Output = std::result::Result<TaskManager, E>>,
 		E: std::error::Error + Send + Sync + 'static + From<ServiceError>,
 	{
+		info!("HELLO");
 		self.print_node_infos();
 		let mut task_manager = self.tokio_runtime.block_on(initialize(self.config))?;
 		let res = self.tokio_runtime.block_on(main(task_manager.future().fuse()));
