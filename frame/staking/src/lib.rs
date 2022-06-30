@@ -570,6 +570,9 @@ pub struct Exposure<AccountId, Balance: HasCompact> {
 	/// The total balance backing this validator.
 	#[codec(compact)]
 	pub total: Balance,
+	/// The balance from custody accounts backing this validator.
+	#[codec(compact)]
+	pub custody: Balance,
 	/// The validator's own stash that is exposed.
 	#[codec(compact)]
 	pub own: Balance,
