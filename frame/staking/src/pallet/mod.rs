@@ -478,7 +478,7 @@ pub mod pallet {
 	/// True if network has been upgraded to this version.
 	/// Storage version of the pallet.
 	///
-	/// This is set to v7.0.0 for new networks.
+	/// This is set to v7.5.0 for new networks.
 	#[pallet::storage]
 	pub(crate) type StorageVersion<T: Config> = StorageValue<_, Releases, ValueQuery>;
 
@@ -533,7 +533,7 @@ pub mod pallet {
 			ForceEra::<T>::put(self.force_era);
 			CanceledSlashPayout::<T>::put(self.canceled_payout);
 			SlashRewardFraction::<T>::put(self.slash_reward_fraction);
-			StorageVersion::<T>::put(Releases::V7_0_0);
+			StorageVersion::<T>::put(Releases::V7_5_0);
 			MinNominatorBond::<T>::put(self.min_nominator_bond);
 			MinValidatorBond::<T>::put(self.min_validator_bond);
 			MinValidatorCommission::<T>::put(self.min_validator_commission);
@@ -694,8 +694,8 @@ pub mod pallet {
 	#[pallet::hooks]
 	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
 		fn on_runtime_upgrade() -> Weight {
-			if StorageVersion::<T>::get() == Releases::V6_0_0 {
-				migrations::v7::migrate::<T>()
+			if StorageVersion::<T>::get() == Releases::V7_0_0 {
+				migrations::v7dot5::migrate::<T>()
 			} else {
 				T::DbWeight::get().reads(1)
 			}
@@ -703,8 +703,17 @@ pub mod pallet {
 
 		#[cfg(feature = "try-runtime")]
 		fn pre_upgrade() -> Result<(), &'static str> {
-			if StorageVersion::<T>::get() == Releases::V6_0_0 {
-				migrations::v7::pre_migrate::<T>()
+			if StorageVersion::<T>::get() == Releases::V7_0_0 {
+				migrations::v7dot5::pre_migrate::<T>()
+			} else {
+				Ok(())
+			}
+		}
+
+		#[cfg(feature = "try-runtime")]
+		fn post_upgrade() -> Result<(), &'static str> {
+			if StorageVersion::<T>::get() == Releases::V7_5_0 {
+				migrations::v7dot5::post_migrate::<T>()
 			} else {
 				Ok(())
 			}
