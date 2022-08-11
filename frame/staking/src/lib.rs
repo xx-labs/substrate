@@ -693,7 +693,7 @@ pub struct Exposure<AccountId, Balance: HasCompact> {
 
 impl<AccountId, Balance: Default + HasCompact> Default for Exposure<AccountId, Balance> {
 	fn default() -> Self {
-		Self { total: Default::default(), own: Default::default(), others: vec![] }
+		Self { total: Default::default(), custody: Default::default(), own: Default::default(), others: vec![] }
 	}
 }
 

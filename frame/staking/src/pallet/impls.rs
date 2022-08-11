@@ -1487,7 +1487,7 @@ impl<T: Config> StakingInterface for Pallet<T> {
 		stash: Self::AccountId,
 		controller: Self::AccountId,
 		value: Self::Balance,
-		payee: Self::AccountId,
+		_payee: Self::AccountId,
 	) -> DispatchResult {
 		Self::bond(
 			RawOrigin::Signed(stash).into(),
