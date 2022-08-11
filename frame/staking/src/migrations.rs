@@ -120,7 +120,7 @@ pub mod v8 {
 	#[cfg(feature = "try-runtime")]
 	pub fn pre_migrate<T: Config>() -> Result<(), &'static str> {
 		frame_support::ensure!(
-			StorageVersion::<T>::get() == crate::Releases::V7_0_0,
+			StorageVersion::<T>::get() == crate::Releases::V7_5_0,
 			"must upgrade linearly"
 		);
 
@@ -130,7 +130,7 @@ pub mod v8 {
 
 	/// Migration to sorted `VoterList`.
 	pub fn migrate<T: Config>() -> Weight {
-		if StorageVersion::<T>::get() == crate::Releases::V7_0_0 {
+		if StorageVersion::<T>::get() == crate::Releases::V7_5_0 {
 			crate::log!(info, "migrating staking to Releases::V8_0_0");
 
 			let migrated = T::VoterList::unsafe_regenerate(
@@ -157,6 +157,102 @@ pub mod v8 {
 		T::VoterList::sanity_check().map_err(|_| "VoterList is not in a sane state.")?;
 		crate::log!(info, "👜 staking bags-list migration passes POST migrate checks ✅",);
 		Ok(())
+	}
+}
+
+pub mod v7dot5 {
+	use super::*;
+
+	#[derive(Decode)]
+	struct OldExposure<AccountId, Balance: HasCompact> {
+		/// The total balance backing this validator.
+		#[codec(compact)]
+		pub total: Balance,
+		/// The validator's own stash that is exposed.
+		#[codec(compact)]
+		pub own: Balance,
+		/// The portions of nominators stashes that are exposed.
+		pub others: Vec<IndividualExposure<AccountId, Balance>>,
+	}
+
+	type OldExposureData<T> = OldExposure<<T as frame_system::Config>::AccountId, BalanceOf<T>>;
+
+	#[cfg(feature = "try-runtime")]
+	pub fn pre_migrate<T: Config>() -> Result<(), &'static str> {
+		frame_support::ensure!(
+			StorageVersion::<T>::get() == crate::Releases::V7_0_0,
+			"must upgrade linearly"
+		);
+
+		crate::log!(info, "👜 staking custody-rewards migration passes PRE migrate checks ✅",);
+		Ok(())
+	}
+
+	// Migration of Exposure including custody stake
+	pub fn migrate<T: Config>() -> Weight {
+		if StorageVersion::<T>::get() == crate::Releases::V7_0_0 {
+			crate::log!(info, "migrating staking to Releases::V7_5_0");
+			let mut reads_writes = 0;
+
+			ErasStakers::<T>::translate_values::<OldExposureData<T>, _>(|old| {
+				reads_writes += 1;
+				let exposure = Exposure {
+					total: old.total,
+					custody: Default::default(),
+					own: old.own,
+					others: old.others,
+				};
+				Some(exposure)
+			});
+
+			ErasStakersClipped::<T>::translate_values::<OldExposureData<T>, _>(|old| {
+				reads_writes += 1;
+				let exposure = Exposure {
+					total: old.total,
+					custody: Default::default(),
+					own: old.own,
+					others: old.others,
+				};
+				Some(exposure)
+			});
+
+			StorageVersion::<T>::put(crate::Releases::V7_5_0);
+			crate::log!(
+				info,
+				"👜 completed staking migration to Releases::V7_5_0 with {} Exposure structs modified",
+				reads_writes,
+			);
+
+			T::DbWeight::get().reads_writes(1+reads_writes, 1+reads_writes)
+		} else {
+			T::DbWeight::get().reads(1)
+		}
+	}
+
+	#[cfg(feature = "try-runtime")]
+	pub fn post_migrate<T: Config>() -> Result<(), &'static str> {
+		// Check all exposures have custody stake set to 0
+		let mut res = ErasStakers::<T>::iter_values().try_for_each(|new| {
+			frame_support::ensure!(
+				new.custody == Default::default(),
+				"custody value is not zero"
+			);
+			Ok(())
+		});
+		if res.is_err() {
+			return res
+		};
+		res = ErasStakersClipped::<T>::iter_values().try_for_each(|new| {
+			frame_support::ensure!(
+				new.custody == Default::default(),
+				"custody value is not zero"
+			);
+			Ok(())
+		});
+		if res.is_ok() {
+			crate::log!(info, "👜 staking custody-rewards migration passes POST migrate checks ✅",);
+		}
+		res
 	}
 }
 

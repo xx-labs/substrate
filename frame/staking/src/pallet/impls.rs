@@ -171,7 +171,8 @@ impl<T: Config> Pallet<T> {
 
 		let validator_leftover_payout = validator_total_payout - validator_commission_payout;
 		// Now let's calculate how this is split to the validator.
-		let validator_exposure_part = Perbill::from_rational(exposure.own, exposure.total);
+		let total_with_custody = exposure.total.saturating_add(exposure.custody);
+		let validator_exposure_part = Perbill::from_rational(exposure.own, total_with_custody);
 		let validator_staking_payout = validator_exposure_part * validator_leftover_payout;
 
 		Self::deposit_event(Event::<T>::PayoutStarted(era, ledger.stash.clone()));
@@ -542,12 +543,14 @@ impl<T: Config> Pallet<T> {
 				// Build `struct exposure` from `support`.
 				let mut others = Vec::with_capacity(support.voters.len());
 				let mut own: BalanceOf<T> = Zero::zero();
+				let mut custody: BalanceOf<T> = Zero::zero();
 				let mut total: BalanceOf<T> = Zero::zero();
 				support
 					.voters
 					.into_iter()
 					.filter_map(|(nominator, weight)| {
 						if T::CustodyHandler::is_custody_account(&nominator) {
+							custody = custody.saturating_add(to_currency(weight));
 							None
 						} else {
 							Some((nominator, to_currency(weight)))
@@ -562,7 +565,7 @@ impl<T: Config> Pallet<T> {
 						total = total.saturating_add(stake);
 					});
 
-				let exposure = Exposure { own, others, total };
+				let exposure = Exposure { own, custody, others, total };
 				(validator, exposure)
 			})
 			.collect::<Vec<(T::AccountId, Exposure<_, _>)>>()

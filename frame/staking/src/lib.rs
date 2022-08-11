@@ -681,6 +681,9 @@ pub struct Exposure<AccountId, Balance: HasCompact> {
 	/// The total balance backing this validator.
 	#[codec(compact)]
 	pub total: Balance,
+	/// The balance from custody accounts backing this validator.
+	#[codec(compact)]
+	pub custody: Balance,
 	/// The validator's own stash that is exposed.
 	#[codec(compact)]
 	pub own: Balance,
@@ -890,6 +893,7 @@ enum Releases {
 	V5_0_0,  // blockable validators.
 	V6_0_0,  // removal of all storage associated with offchain phragmen.
 	V7_0_0,  // keep track of number of nominators / validators in map
+	V7_5_0,  // track custody stake in Exposure.
 	V8_0_0,  // populate `VoterList`.
 	V9_0_0,  // inject validators into `VoterList` as well.
 	V10_0_0, // remove `EarliestUnappliedSlash`.

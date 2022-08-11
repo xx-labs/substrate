@@ -201,6 +201,7 @@ fn basic_setup_works() {
 			Staking::eras_stakers(active_era(), 11),
 			Exposure {
 				total: 1125,
+				custody: 0,
 				own: 1000,
 				others: vec![IndividualExposure { who: 101, value: 125 }]
 			},
@@ -209,6 +210,7 @@ fn basic_setup_works() {
 			Staking::eras_stakers(active_era(), 21),
 			Exposure {
 				total: 1375,
+				custody: 0,
 				own: 1000,
 				others: vec![IndividualExposure { who: 101, value: 375 }]
 			},
@@ -582,6 +584,7 @@ fn nominating_and_rewards_should_work() {
 				Staking::eras_stakers(active_era(), 11),
 				Exposure {
 					total: 1000 + 800,
+					custody: 0,
 					own: 1000,
 					others: vec![
 						IndividualExposure { who: 1, value: 400 },
@@ -593,6 +596,7 @@ fn nominating_and_rewards_should_work() {
 				Staking::eras_stakers(active_era(), 21),
 				Exposure {
 					total: 1000 + 1200,
+					custody: 0,
 					own: 1000,
 					others: vec![
 						IndividualExposure { who: 1, value: 600 },
@@ -1087,7 +1091,7 @@ fn bond_extra_and_withdraw_unbonded_works() {
 		);
 		assert_eq!(
 			Staking::eras_stakers(active_era(), 11),
-			Exposure { total: 1000, own: 1000, others: vec![] }
+			Exposure { total: 1000, custody: 0, own: 1000, others: vec![] }
 		);
 
 		// deposit the extra 100 units
@@ -1107,7 +1111,7 @@ fn bond_extra_and_withdraw_unbonded_works() {
 		// Exposure is a snapshot! only updated after the next era update.
 		assert_ne!(
 			Staking::eras_stakers(active_era(), 11),
-			Exposure { total: 1000 + 100, own: 1000 + 100, others: vec![] }
+			Exposure { total: 1000 + 100, custody: 0, own: 1000 + 100, others: vec![] }
 		);
 
 		// trigger next era.
@@ -1129,7 +1133,7 @@ fn bond_extra_and_withdraw_unbonded_works() {
 		// Exposure is now updated.
 		assert_eq!(
 			Staking::eras_stakers(active_era(), 11),
-			Exposure { total: 1000 + 100, own: 1000 + 100, others: vec![] }
+			Exposure { total: 1000 + 100, custody: 0, own: 1000 + 100, others: vec![] }
 		);
 
 		// Unbond almost all of the funds in stash.
@@ -1545,7 +1549,7 @@ fn reward_to_stake_works() {
 			let _ = Balances::make_free_balance_be(&20, 1000);
 
 			// Bypass logic and change current exposure
-			ErasStakers::<Test>::insert(0, 21, Exposure { total: 69, own: 69, others: vec![] });
+			ErasStakers::<Test>::insert(0, 21, Exposure { total: 69, custody: 0, own: 69, others: vec![] });
 			<Ledger<Test>>::insert(
 				&20,
 				StakingLedger {
@@ -1951,7 +1955,7 @@ fn reward_validator_slashing_validator_does_not_overflow() {
 		// Set staker
 		let _ = Balances::make_free_balance_be(&11, stake);
 
-		let exposure = Exposure::<AccountId, Balance> { total: stake, own: stake, others: vec![] };
+		let exposure = Exposure::<AccountId, Balance> { total: stake, custody: 0, own: stake, others: vec![] };
 		let reward = EraRewardPoints::<AccountId> {
 			total: 1,
 			individual: vec![(11, 1)].into_iter().collect(),
@@ -1977,6 +1981,7 @@ fn reward_validator_slashing_validator_does_not_overflow() {
 			11,
 			Exposure {
 				total: stake,
+				custody: 0,
 				own: 1,
 				others: vec![IndividualExposure { who: 2, value: stake - 1 }],
 			},
@@ -2152,7 +2157,7 @@ fn slashing_performed_according_exposure() {
 		// Handle an offence with a historical exposure.
 		on_offence_now(
 			&[OffenceDetails {
-				offender: (11, Exposure { total: 500, own: 500, others: vec![] }),
+				offender: (11, Exposure { total: 500, custody: 0, own: 500, others: vec![] }),
 				reporters: vec![],
 			}],
 			&[Perbill::from_percent(50)],

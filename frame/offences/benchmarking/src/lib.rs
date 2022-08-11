@@ -146,7 +146,7 @@ fn create_offender<T: Config>(n: u32, nominators: u32) -> Result<Offender<T>, &'
 		nominator_stashes.push(nominator_stash.clone());
 	}
 
-	let exposure = Exposure { total: amount * n.into(), own: amount, others: individual_exposures };
+	let exposure = Exposure { total: amount.clone() * n.into(), custody: Default::default(), own: amount, others: individual_exposures };
 	let current_era = 0u32;
 	Staking::<T>::add_era_stakers(current_era, stash.clone(), exposure);
 

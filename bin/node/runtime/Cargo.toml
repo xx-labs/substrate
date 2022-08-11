@@ -166,7 +166,6 @@ std = [
 	"sp-session/std",
 	"pallet-sudo/std",
 	"frame-support/std",
-	"frame-benchmarking/std",
 	"frame-system-rpc-runtime-api/std",
 	"frame-system/std",
 	"pallet-election-provider-multi-phase/std",

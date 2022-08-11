@@ -535,6 +535,62 @@ fn non_custody_accounts_can_be_slashed() {
         })
 }
 
+#[test]
+fn custody_account_affects_payout() {
+    let a = 101;
+
+    ExtBuilder::default()
+        .min_validator_commission(Default::default())
+        .nominate(false)
+        .custody_accounts(&[a]) // A is a custody account
+        .build_and_execute(|| {
+            // Custody account nominates 31
+            assert_ok!(Staking::bond(Origin::signed(101), 100, 2000, None));
+            assert_ok!(Staking::nominate(Origin::signed(100), vec![31]));
+
+            // Start next era, electing 21 and 31
+            mock::start_active_era(1);
+            assert_eq_uvec!(validator_controllers(), vec![20, 30]);
+
+            // Custody stake is not exposed, but helped elect 31
+            assert!(ErasStakers::<Test>::iter_prefix_values(active_era())
+                .all(|exposure| exposure.others.is_empty()));
+            
+            // give 31 some points
+            <Pallet<Test>>::reward_by_ids(vec![(31, 100)]);
+
+            let total_payout = current_total_payout_for_duration(reward_time_per_era());
+
+            mock::start_active_era(2);
+
+            let init_issuance = Balances::total_issuance();
+            // validator 31 payout is (500/2500)*total_payout
+            let validator_payout = Perbill::from_rational(500u32, 2500u32) * total_payout;
+            let init_balance = Balances::total_balance(&31);
+
+            // Pay rewards for era 1
+            make_all_reward_payment(1);
+
+            // validator 31 got paid
+            assert_eq!(
+                Balances::total_balance(&31),
+                init_balance+validator_payout,
+            );
+
+            // custody account didn't get paid
+            assert_eq!(
+                Balances::total_balance(&a),
+                2000,
+            );
+
+            // total issuance only increased by payout to validator 31
+            assert_eq!(
+                Balances::total_issuance(),
+                init_issuance+validator_payout,
+            );
+        })
+}
+
 //////////////////////////////////////////
 //         Rewards Points System        //
 //////////////////////////////////////////
