@@ -40,17 +40,9 @@ mod impls;
 pub use impls::*;
 
 use crate::{
-<<<<<<< HEAD
-	slashing, weights::WeightInfo, ActiveEraInfo, BalanceOf, EraPayout, EraRewardPoints, Exposure,
-	Forcing, MaxUnlockingChunks, NegativeImbalanceOf, Nominations, PositiveImbalanceOf, Releases,
-	SessionInterface, StakingLedger, UnappliedSlash, UnlockChunk,
-	ValidatorPrefs, CmixHandler, CustodyHandler,
-=======
-	slashing, weights::WeightInfo, AccountIdLookupOf, ActiveEraInfo, BalanceOf, EraPayout,
-	EraRewardPoints, Exposure, Forcing, MaxUnlockingChunks, NegativeImbalanceOf, Nominations,
-	PositiveImbalanceOf, Releases, RewardDestination, SessionInterface, StakingLedger,
-	UnappliedSlash, UnlockChunk, ValidatorPrefs,
->>>>>>> master
+	slashing, weights::WeightInfo, AccountIdLookupOf, ActiveEraInfo, BalanceOf, CmixHandler, CustodyHandler,
+	EraPayout, EraRewardPoints, Exposure, Forcing, MaxUnlockingChunks, NegativeImbalanceOf, Nominations,
+	PositiveImbalanceOf, Releases, SessionInterface, StakingLedger, UnappliedSlash, UnlockChunk, ValidatorPrefs,
 };
 
 const STAKING_ID: LockIdentifier = *b"staking ";
