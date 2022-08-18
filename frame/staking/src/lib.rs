@@ -305,7 +305,7 @@ use frame_support::{
 use scale_info::TypeInfo;
 use sp_runtime::{
 	curve::PiecewiseLinear,
-	traits::{AtLeast32BitUnsigned, Convert, Saturating, Zero},
+	traits::{AtLeast32BitUnsigned, Convert, Saturating, StaticLookup, Zero},
 	Perbill, Perquintill, RuntimeDebug,
 };
 use sp_staking::{
@@ -342,6 +342,8 @@ type PositiveImbalanceOf<T> = <<T as Config>::Currency as Currency<
 type NegativeImbalanceOf<T> = <<T as Config>::Currency as Currency<
 	<T as frame_system::Config>::AccountId,
 >>::NegativeImbalance;
+
+type AccountIdLookupOf<T> = <<T as frame_system::Config>::Lookup as StaticLookup>::Source;
 
 parameter_types! {
 	pub MaxUnlockingChunks: u32 = 32;
@@ -901,7 +903,7 @@ enum Releases {
 
 impl Default for Releases {
 	fn default() -> Self {
-		Releases::V8_0_0
+		Releases::V10_0_0
 	}
 }
 

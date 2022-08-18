@@ -83,6 +83,7 @@ type BalanceOf<T> =
 	<<T as Config>::Currency as Currency<<T as frame_system::Config>::AccountId>>::Balance;
 type MaxLocksOf<T> =
 	<<T as Config>::Currency as LockableCurrency<<T as frame_system::Config>::AccountId>>::MaxLocks;
+type AccountIdLookupOf<T> = <<T as frame_system::Config>::Lookup as StaticLookup>::Source;
 
 const VESTING_ID: LockIdentifier = *b"vesting ";
 
@@ -326,10 +327,7 @@ pub mod pallet {
 		#[pallet::weight(T::WeightInfo::vest_other_locked(MaxLocksOf::<T>::get(), T::MAX_VESTING_SCHEDULES)
 			.max(T::WeightInfo::vest_other_unlocked(MaxLocksOf::<T>::get(), T::MAX_VESTING_SCHEDULES))
 		)]
-		pub fn vest_other(
-			origin: OriginFor<T>,
-			target: <T::Lookup as StaticLookup>::Source,
-		) -> DispatchResult {
+		pub fn vest_other(origin: OriginFor<T>, target: AccountIdLookupOf<T>) -> DispatchResult {
 			ensure_signed(origin)?;
 			let who = T::Lookup::lookup(target)?;
 			Self::do_vest(who)
@@ -357,7 +355,7 @@ pub mod pallet {
 		)]
 		pub fn vested_transfer(
 			origin: OriginFor<T>,
-			target: <T::Lookup as StaticLookup>::Source,
+			target: AccountIdLookupOf<T>,
 			schedule: VestingInfo<BalanceOf<T>, T::BlockNumber>,
 		) -> DispatchResult {
 			let transactor = ensure_signed(origin)?;
@@ -388,8 +386,8 @@ pub mod pallet {
 		)]
 		pub fn force_vested_transfer(
 			origin: OriginFor<T>,
-			source: <T::Lookup as StaticLookup>::Source,
-			target: <T::Lookup as StaticLookup>::Source,
+			source: AccountIdLookupOf<T>,
+			target: AccountIdLookupOf<T>,
 			schedule: VestingInfo<BalanceOf<T>, T::BlockNumber>,
 		) -> DispatchResult {
 			ensure_root(origin)?;
@@ -499,8 +497,8 @@ impl<T: Config> Pallet<T> {
 
 	// Execute a vested transfer from `source` to `target` with the given `schedule`.
 	fn do_vested_transfer(
-		source: <T::Lookup as StaticLookup>::Source,
-		target: <T::Lookup as StaticLookup>::Source,
+		source: AccountIdLookupOf<T>,
+		target: AccountIdLookupOf<T>,
 		schedule: VestingInfo<BalanceOf<T>, T::BlockNumber>,
 	) -> DispatchResult {
 		// Validate user inputs.
