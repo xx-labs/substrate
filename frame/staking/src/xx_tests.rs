@@ -591,6 +591,72 @@ fn custody_account_affects_payout() {
         })
 }
 
+#[test]
+fn custody_account_affects_payout_nominators() {
+    let a = 101;
+
+    ExtBuilder::default()
+        .min_validator_commission(Default::default())
+        .nominate(false)
+        .custody_accounts(&[a]) // A is a custody account
+        .build_and_execute(|| {
+            // Custody account nominates 31
+            assert_ok!(Staking::bond(Origin::signed(101), 100, 2000, None));
+            assert_ok!(Staking::nominate(Origin::signed(100), vec![31]));
+
+            // Nominator
+            assert_ok!(Staking::bond(Origin::signed(61), 60, 2000, None));
+            assert_ok!(Staking::nominate(Origin::signed(60), vec![31]));
+
+            // Start next era, electing 21 and 31
+            mock::start_active_era(1);
+            assert_eq_uvec!(validator_controllers(), vec![20, 30]);
+
+            // give 31 some points
+            <Pallet<Test>>::reward_by_ids(vec![(31, 100)]);
+
+            let total_payout = current_total_payout_for_duration(reward_time_per_era());
+
+            mock::start_active_era(2);
+
+            let init_issuance = Balances::total_issuance();
+            // validator 31 payout is (500/4500)*total_payout
+            let validator_payout = Perbill::from_rational(500u32, 4500u32) * total_payout;
+            let init_balance = Balances::total_balance(&31);
+
+            // nominator 61 payout is (2000/4500)*total_payout
+            let nominator_payout = Perbill::from_rational(2000u32, 4500u32) * total_payout;
+            let init_balance_nominator = Balances::total_balance(&61);
+
+            // Pay rewards for era 1
+            make_all_reward_payment(1);
+
+            // validator 31 got paid
+            assert_eq!(
+                Balances::total_balance(&31),
+                init_balance+validator_payout,
+            );
+
+            // nominator 61 got paid
+            assert_eq!(
+                Balances::total_balance(&61),
+                init_balance_nominator+nominator_payout,
+            );
+
+            // custody account didn't get paid
+            assert_eq!(
+                Balances::total_balance(&a),
+                2000,
+            );
+
+            // total issuance only increased by payout to validator 31 and nominator 61
+            assert_eq!(
+                Balances::total_issuance(),
+                init_issuance+validator_payout+nominator_payout,
+            );
+        })
+}
+
 //////////////////////////////////////////
 //         Rewards Points System        //
 //////////////////////////////////////////
