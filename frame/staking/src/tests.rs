@@ -4560,7 +4560,6 @@ fn capped_stakers_works() {
 			let (_, controller) = testing_utils::create_stash_controller::<Test>(
 				i + 10_000_000,
 				100,
-				cmix_id(i as u8),
 			)
 			.unwrap();
 			assert_ok!(Staking::validate(Origin::signed(controller), ValidatorPrefs::default()));
@@ -4571,7 +4570,6 @@ fn capped_stakers_works() {
 		let (_, last_validator) = testing_utils::create_stash_controller::<Test>(
 			1337,
 			100,
-			cmix_id(200u8),
 		)
 		.unwrap();
 
@@ -4586,7 +4584,6 @@ fn capped_stakers_works() {
 			let (_, controller) = testing_utils::create_stash_controller::<Test>(
 				i + 20_000_000,
 				100,
-				None,
 			)
 			.unwrap();
 			assert_ok!(Staking::nominate(Origin::signed(controller), vec![1]));
@@ -4597,7 +4594,6 @@ fn capped_stakers_works() {
 		let (_, last_nominator) = testing_utils::create_stash_controller::<Test>(
 			30_000_000,
 			100,
-			None,
 		)
 		.unwrap();
 		assert_noop!(

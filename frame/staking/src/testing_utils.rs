@@ -74,17 +74,18 @@ pub fn create_funded_user_with_balance<T: Config>(
 pub fn create_stash_controller<T: Config>(
 	n: u32,
 	balance_factor: u32,
-	cmix_id: Option<T::Hash>,
 ) -> Result<(T::AccountId, T::AccountId), &'static str> {
 	let stash = create_funded_user::<T>("stash", n, balance_factor);
 	let controller = create_funded_user::<T>("controller", n, balance_factor);
 	let controller_lookup = T::Lookup::unlookup(controller.clone());
 	let amount = T::Currency::minimum_balance() * (balance_factor / 10).max(1).into();
+	let entropy = ("stash", n, balance_factor).using_encoded(blake2_256);
+	let cmix_id = T::Hashing::hash(&entropy);
 	Staking::<T>::bond(
 		RawOrigin::Signed(stash.clone()).into(),
 		controller_lookup,
 		amount,
-		cmix_id,
+		Some(cmix_id),
 	)?;
 	Ok((stash, controller))
 }
@@ -93,17 +94,17 @@ pub fn create_stash_controller<T: Config>(
 pub fn create_stash_controller_with_balance<T: Config>(
 	n: u32,
 	balance: crate::BalanceOf<T>,
-	cmix_id: Option<T::Hash>,
 ) -> Result<(T::AccountId, T::AccountId), &'static str> {
 	let stash = create_funded_user_with_balance::<T>("stash", n, balance);
 	let controller = create_funded_user_with_balance::<T>("controller", n, balance);
 	let controller_lookup = T::Lookup::unlookup(controller.clone());
-
+	let entropy = ("stash", n, balance).using_encoded(blake2_256);
+	let cmix_id = T::Hashing::hash(&entropy);
 	Staking::<T>::bond(
 		RawOrigin::Signed(stash.clone()).into(),
 		controller_lookup,
 		balance,
-		cmix_id,
+		Some(cmix_id),
 	)?;
 	Ok((stash, controller))
 }
@@ -124,9 +125,8 @@ pub fn create_validators_with_seed<T: Config>(
 ) -> Result<Vec<AccountIdLookupOf<T>>, &'static str> {
 	let mut validators: Vec<AccountIdLookupOf<T>> = Vec::with_capacity(max as usize);
 	for i in 0..max {
-		let cmix_id = T::Hashing::hash(&mut i.to_be_bytes());
 		let (stash, controller) =
-			create_stash_controller::<T>(i + seed, balance_factor, Some(cmix_id))?;
+			create_stash_controller::<T>(i + seed, balance_factor)?;
 		let validator_prefs =
 			ValidatorPrefs { commission: Perbill::from_percent(50), ..Default::default() };
 		Staking::<T>::validate(RawOrigin::Signed(controller).into(), validator_prefs)?;
@@ -166,9 +166,8 @@ pub fn create_validators_with_nominators_for_era<T: Config>(
 	// Create validators
 	for i in 0..validators {
 		let balance_factor = if randomize_stake { rng.next_u32() % 255 + 10 } else { 100u32 };
-		let cmix_id = T::Hashing::hash(&mut i.to_be_bytes());
 		let (v_stash, v_controller) =
-			create_stash_controller::<T>(i, balance_factor, Some(cmix_id))?;
+			create_stash_controller::<T>(i, balance_factor)?;
 		let validator_prefs =
 			ValidatorPrefs { commission: Perbill::from_percent(50), ..Default::default() };
 		Staking::<T>::validate(RawOrigin::Signed(v_controller.clone()).into(), validator_prefs)?;
@@ -183,7 +182,7 @@ pub fn create_validators_with_nominators_for_era<T: Config>(
 	for j in 0..nominators {
 		let balance_factor = if randomize_stake { rng.next_u32() % 255 + 10 } else { 100u32 };
 		let (_n_stash, n_controller) =
-			create_stash_controller::<T>(u32::MAX - j, balance_factor, None)?;
+			create_stash_controller::<T>(u32::MAX - j, balance_factor)?;
 
 		// Have them randomly validate
 		let mut available_validators = validator_chosen.clone();

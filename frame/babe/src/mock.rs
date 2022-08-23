@@ -36,7 +36,7 @@ use sp_runtime::{
 	curve::PiecewiseLinear,
 	impl_opaque_keys,
 	testing::{Digest, DigestItem, Header, TestXt},
-	traits::{Header as _, IdentityLookup, OpaqueKeys},
+	traits::{Header as _, IdentityLookup, OpaqueKeys, Zero},
 	Perbill,
 };
 use sp_staking::{EraIndex, SessionIndex};
@@ -180,10 +180,34 @@ impl onchain::Config for OnChainSeqPhragmen {
 	type WeightInfo = ();
 }
 
+pub struct CustodyHandlerMock;
+impl pallet_staking::CustodyHandler<DummyValidatorId, u128> for CustodyHandlerMock {
+	fn is_custody_account(_account: &DummyValidatorId) -> bool {
+		false
+	}
+	fn total_custody() -> u128 {
+		u128::zero() // This isn't used by the staking pallet
+	}
+}
+
+pub struct CmixHandlerMock;
+impl pallet_staking::CmixHandler for CmixHandlerMock {
+	fn get_block_points() -> u32 { 10 }
+	fn end_era() {} // do nothing
+}
+
+type CmixId = <Test as frame_system::Config>::Hash;
+pub fn cmix_id(byte: u8) -> Option<CmixId> {
+	Some(CmixId::repeat_byte(byte))
+}
+
 impl pallet_staking::Config for Test {
 	type MaxNominations = ConstU32<16>;
 	type RewardRemainder = ();
 	type CurrencyToVote = frame_support::traits::SaturatingCurrencyToVote;
+	type CmixHandler = CmixHandlerMock;
+	type CustodyHandler = CustodyHandlerMock;
+	type AdminOrigin = frame_system::EnsureRoot<Self::AccountId>;
 	type Event = Event;
 	type Currency = Balances;
 	type CurrencyBalance = <Self as pallet_balances::Config>::Balance;
@@ -394,7 +418,7 @@ pub fn new_test_ext_raw_authorities(authorities: Vec<AuthorityId>) -> sp_io::Tes
 	// controllers are the index + 1000
 	let stakers: Vec<_> = (0..authorities.len())
 		.map(|i| {
-			(i as u64, i as u64 + 1000, 10_000, pallet_staking::StakerStatus::<u64>::Validator)
+			(i as u64, i as u64 + 1000, 10_000, pallet_staking::StakerStatus::<CmixId, u64>::Validator(cmix_id(i as u8)))
 		})
 		.collect();
 

@@ -77,7 +77,7 @@ pub fn create_validator_with_nominators<T: Config>(
 	let mut points_total = 0;
 	let mut points_individual = Vec::new();
 
-	let (v_stash, v_controller) = create_stash_controller::<T>(0, 100, Some(Default::default()))?;
+	let (v_stash, v_controller) = create_stash_controller::<T>(0, 100)?;
 	let validator_prefs =
 		ValidatorPrefs { commission: Perbill::from_percent(50), ..Default::default() };
 	Staking::<T>::validate(RawOrigin::Signed(v_controller).into(), validator_prefs)?;
@@ -90,7 +90,7 @@ pub fn create_validator_with_nominators<T: Config>(
 
 	// Give the validator n nominators, but keep total users in the system the same.
 	for i in 0..upper_bound {
-		let (n_stash, n_controller) = create_stash_controller::<T>(u32::max_value() - i, 100, None)?;
+		let (n_stash, n_controller) = create_stash_controller::<T>(u32::max_value() - i, 100)?;
 		if i < n {
 			Staking::<T>::nominate(
 				RawOrigin::Signed(n_controller.clone()).into(),
@@ -163,7 +163,6 @@ impl<T: Config> ListScenario<T> {
 		let (origin_stash1, origin_controller1) = create_stash_controller_with_balance::<T>(
 			USER_SEED + 2,
 			origin_weight,
-			Some(T::Hashing::hash(&mut (USER_SEED + 2).to_be_bytes())),
 		)?;
 		Staking::<T>::nominate(
 			RawOrigin::Signed(origin_controller1.clone()).into(),
@@ -174,7 +173,6 @@ impl<T: Config> ListScenario<T> {
 		let (_origin_stash2, origin_controller2) = create_stash_controller_with_balance::<T>(
 			USER_SEED + 3,
 			origin_weight,
-			Some(T::Hashing::hash(&mut (USER_SEED + 3).to_be_bytes())),
 		)?;
 		Staking::<T>::nominate(
 			RawOrigin::Signed(origin_controller2).into(),
@@ -194,7 +192,6 @@ impl<T: Config> ListScenario<T> {
 		let (_dest_stash1, dest_controller1) = create_stash_controller_with_balance::<T>(
 			USER_SEED + 1,
 			dest_weight,
-			Some(T::Hashing::hash(&mut (USER_SEED + 1).to_be_bytes())),
 		)?;
 		Staking::<T>::nominate(
 			RawOrigin::Signed(dest_controller1).into(),
@@ -280,7 +277,7 @@ benchmarks! {
 	withdraw_unbonded_update {
 		// Slashing Spans
 		let s in 0 .. MAX_SPANS;
-		let (stash, controller) = create_stash_controller::<T>(0, 100, Default::default())?;
+		let (stash, controller) = create_stash_controller::<T>(0, 100)?;
 		add_slashing_spans::<T>(&stash, s);
 		let amount = T::Currency::minimum_balance() * 5u32.into(); // Half of total
 		Staking::<T>::unbond(RawOrigin::Signed(controller.clone()).into(), amount)?;
@@ -328,7 +325,6 @@ benchmarks! {
 		let (stash, controller) = create_stash_controller::<T>(
 			T::MaxNominations::get() - 1,
 			100,
-			Default::default(),
 		)?;
 		// because it is chilled.
 		assert!(!T::VoterList::contains(&stash));
@@ -356,7 +352,6 @@ benchmarks! {
 		let (stash, controller) = create_stash_controller::<T>(
 			T::MaxNominations::get() - 1,
 			100,
-			Default::default(),
 		)?;
 		let stash_lookup = T::Lookup::unlookup(stash.clone());
 
@@ -371,7 +366,6 @@ benchmarks! {
 			let (n_stash, n_controller) = create_stash_controller::<T>(
 				T::MaxNominations::get() + i,
 				100,
-				Default::default(),
 			)?;
 
 			// bake the nominations; we first clone them from the rest of the validators.
@@ -419,7 +413,6 @@ benchmarks! {
 		let (stash, controller) = create_stash_controller_with_balance::<T>(
 			SEED + T::MaxNominations::get() + 1, // make sure the account does not conflict with others
 			origin_weight,
-			Default::default(),
 		).unwrap();
 
 		assert!(!Nominators::<T>::contains_key(&stash));
@@ -453,7 +446,7 @@ benchmarks! {
 	}
 
 	set_controller {
-		let (stash, _) = create_stash_controller::<T>(USER_SEED, 100, Default::default())?;
+		let (stash, _) = create_stash_controller::<T>(USER_SEED, 100)?;
 		let new_controller = create_funded_user::<T>("new_controller", USER_SEED, 100);
 		let new_controller_lookup = T::Lookup::unlookup(new_controller.clone());
 		whitelist_account!(stash);
@@ -735,7 +728,7 @@ benchmarks! {
 	#[extra]
 	do_slash {
 		let l in 1 .. MaxUnlockingChunks::get() as u32;
-		let (stash, controller) = create_stash_controller::<T>(0, 100, Default::default())?;
+		let (stash, controller) = create_stash_controller::<T>(0, 100)?;
 		let mut staking_ledger = Ledger::<T>::get(controller.clone()).unwrap();
 		let unlock_chunk = UnlockChunk::<BalanceOf<T>> {
 			value: 1u32.into(),
@@ -870,7 +863,7 @@ benchmarks! {
 
 		// Create a validator with a commission of 50%
 		let (stash, controller) =
-			create_stash_controller::<T>(1, 1, Some(Default::default()))?;
+			create_stash_controller::<T>(1, 1)?;
 		let validator_prefs =
 			ValidatorPrefs { commission: Perbill::from_percent(50), ..Default::default() };
 		Staking::<T>::validate(RawOrigin::Signed(controller).into(), validator_prefs)?;

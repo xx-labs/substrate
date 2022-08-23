@@ -30,7 +30,7 @@ use frame_system as system;
 use pallet_session::historical as pallet_session_historical;
 use sp_runtime::{
 	testing::{Header, UintAuthorityId},
-	traits::IdentityLookup,
+	traits::{IdentityLookup, Zero},
 };
 
 type AccountId = u64;
@@ -156,12 +156,31 @@ impl onchain::Config for OnChainSeqPhragmen {
 	type WeightInfo = ();
 }
 
+pub struct CustodyHandlerMock;
+impl pallet_staking::CustodyHandler<AccountId, Balance> for CustodyHandlerMock {
+	fn is_custody_account(_account: &AccountId) -> bool {
+		false
+	}
+	fn total_custody() -> Balance {
+		Balance::zero() // This isn't used by the staking pallet
+	}
+}
+
+pub struct CmixHandlerMock;
+impl pallet_staking::CmixHandler for CmixHandlerMock {
+	fn get_block_points() -> u32 { 10 }
+	fn end_era() {} // do nothing
+}
+
 impl pallet_staking::Config for Test {
 	type MaxNominations = ConstU32<16>;
 	type Currency = Balances;
 	type CurrencyBalance = <Self as pallet_balances::Config>::Balance;
 	type UnixTime = pallet_timestamp::Pallet<Self>;
 	type CurrencyToVote = frame_support::traits::SaturatingCurrencyToVote;
+	type CmixHandler = CmixHandlerMock;
+	type CustodyHandler = CustodyHandlerMock;
+	type AdminOrigin = frame_system::EnsureRoot<Self::AccountId>;
 	type RewardRemainder = ();
 	type Event = Event;
 	type Slash = ();
