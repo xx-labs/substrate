@@ -4018,6 +4018,31 @@ fn payout_to_any_account_works() {
 }
 
 #[test]
+fn payout_stakers_commission_one_hundred() {
+	ExtBuilder::default().has_stakers(false).build_and_execute(|| {
+		let balance = 1000;
+		// Create a validator with 100% commission
+		bond_validator_with_commission(11, 10, balance, Perbill::from_percent(100)); // Default(64)
+		assert_eq!(Validators::<Test>::count(), 1);
+
+		// Create nominators, targeting stash of validator
+		for i in 0..36 {
+			let bond_amount = balance + i as Balance;
+			bond_nominator(1000 + i, 100 + i, bond_amount, vec![11]);
+		}
+
+		let zero_nom_payouts_weight = <Test as Config>::WeightInfo::payout_stakers_alive_staked(0);
+
+		mock::start_active_era(1);
+		Staking::reward_by_ids(vec![(11, 1)]);
+
+		mock::start_active_era(2);
+		let weight = Staking::payout_stakers(Origin::signed(1337), 11, 1).ok().unwrap().actual_weight.unwrap();
+		assert_eq!(weight, zero_nom_payouts_weight);
+	})
+}
+
+#[test]
 fn session_buffering_with_offset() {
 	// similar to live-chains, have some offset for the first session
 	ExtBuilder::default()

@@ -191,18 +191,20 @@ impl<T: Config> Pallet<T> {
 
 		// Lets now calculate how this is split to the nominators.
 		// Reward only the clipped exposures. Note this is not necessarily sorted.
-		for nominator in exposure.others.iter() {
-			let nominator_exposure_part = Perbill::from_rational(nominator.value, exposure.total);
+		if !validator_leftover_payout.is_zero() {
+			for nominator in exposure.others.iter() {
+				let nominator_exposure_part = Perbill::from_rational(nominator.value, exposure.total);
 
-			let nominator_reward: BalanceOf<T> =
-				nominator_exposure_part * validator_leftover_payout;
-			// We can now make nominator payout:
-			if let Some(imbalance) = Self::make_payout(&nominator.who, nominator_reward) {
-				// Note: this logic does not count payouts for `RewardDestination::None`.
-				nominator_payout_count += 1;
-				let e = Event::<T>::Rewarded(nominator.who.clone(), imbalance.peek());
-				Self::deposit_event(e);
-				total_imbalance.subsume(imbalance);
+				let nominator_reward: BalanceOf<T> =
+					nominator_exposure_part * validator_leftover_payout;
+				// We can now make nominator payout:
+				if let Some(imbalance) = Self::make_payout(&nominator.who, nominator_reward) {
+					// Note: this logic does not count payouts for `RewardDestination::None`.
+					nominator_payout_count += 1;
+					let e = Event::<T>::Rewarded(nominator.who.clone(), imbalance.peek());
+					Self::deposit_event(e);
+					total_imbalance.subsume(imbalance);
+				}
 			}
 		}
 

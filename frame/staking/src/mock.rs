@@ -667,6 +667,12 @@ pub(crate) fn bond_validator(stash: AccountId, ctrl: AccountId, val: Balance) {
 	assert_ok!(Session::set_keys(Origin::signed(ctrl), SessionKeys { other: ctrl.into() }, vec![]));
 }
 
+pub(crate) fn bond_validator_with_commission(stash: AccountId, ctrl: AccountId, val: Balance, commission: Perbill) {
+	bond(stash, ctrl, val);
+	assert_ok!(Staking::validate(Origin::signed(ctrl), ValidatorPrefs { commission, blocked: false }));
+	assert_ok!(Session::set_keys(Origin::signed(ctrl), SessionKeys { other: ctrl.into() }, vec![]));
+}
+
 pub(crate) fn bond_nominator(
 	stash: AccountId,
 	ctrl: AccountId,
