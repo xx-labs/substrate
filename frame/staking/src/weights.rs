@@ -457,14 +457,14 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 			.saturating_add(T::DbWeight::get().writes(6 as RefTimeWeight))
 	}
 	fn set_cmix_id() -> Weight {
-		(83_389_000 as Weight)
-			.saturating_add(T::DbWeight::get().reads(2 as Weight))
-			.saturating_add(T::DbWeight::get().writes(1 as Weight))
+		Weight::from_ref_time(83_389_000 as RefTimeWeight)
+			.saturating_add(T::DbWeight::get().reads(2 as RefTimeWeight))
+			.saturating_add(T::DbWeight::get().writes(1 as RefTimeWeight))
 	}
 	fn transfer_cmix_id() -> Weight {
-		(83_389_000 as Weight)
-			.saturating_add(T::DbWeight::get().reads(9 as Weight))
-			.saturating_add(T::DbWeight::get().writes(2 as Weight))
+		Weight::from_ref_time(83_389_000 as RefTimeWeight)
+			.saturating_add(T::DbWeight::get().reads(9 as RefTimeWeight))
+			.saturating_add(T::DbWeight::get().writes(2 as RefTimeWeight))
 	}
 	// Storage: Staking MinCommission (r:1 w:0)
 	// Storage: Staking Validators (r:1 w:1)
@@ -853,14 +853,14 @@ impl WeightInfo for () {
 			.saturating_add(RocksDbWeight::get().writes(6 as RefTimeWeight))
 	}
 	fn set_cmix_id() -> Weight {
-		(83_389_000 as Weight)
-			.saturating_add(RocksDbWeight::get().reads(2 as Weight))
-			.saturating_add(RocksDbWeight::get().writes(1 as Weight))
+		Weight::from_ref_time(83_389_000 as RefTimeWeight)
+			.saturating_add(RocksDbWeight::get().reads(2 as RefTimeWeight))
+			.saturating_add(RocksDbWeight::get().writes(1 as RefTimeWeight))
 	}
 	fn transfer_cmix_id() -> Weight {
-		(83_389_000 as Weight)
-			.saturating_add(RocksDbWeight::get().reads(9 as Weight))
-			.saturating_add(RocksDbWeight::get().writes(2 as Weight))
+		Weight::from_ref_time(83_389_000 as RefTimeWeight)
+			.saturating_add(RocksDbWeight::get().reads(9 as RefTimeWeight))
+			.saturating_add(RocksDbWeight::get().writes(2 as RefTimeWeight))
 	}
 	// Storage: Staking MinCommission (r:1 w:0)
 	// Storage: Staking Validators (r:1 w:1)
