@@ -48,7 +48,7 @@ use sp_core::{
 	crypto::{self, ByteArray},
 	ecdsa, ed25519,
 	hash::{H256, H512},
-	sr25519,
+	sr25519, wots,
 };
 use sp_std::prelude::*;
 
@@ -246,6 +246,8 @@ pub enum MultiSignature {
 	Sr25519(sr25519::Signature),
 	/// An ECDSA/SECP256k1 signature.
 	Ecdsa(ecdsa::Signature),
+	/// A W-OTS+ signature.
+    Wots(wots::Signature),
 }
 
 impl From<ed25519::Signature> for MultiSignature {
@@ -299,6 +301,23 @@ impl TryFrom<MultiSignature> for ecdsa::Signature {
 	}
 }
 
+impl From<wots::Signature> for MultiSignature {
+    fn from(x: wots::Signature) -> Self {
+        Self::Wots(x)
+    }
+}
+
+impl TryFrom<MultiSignature> for wots::Signature {
+    type Error = ();
+    fn try_from(m: MultiSignature) -> Result<Self, Self::Error> {
+        if let MultiSignature::Wots(x) = m {
+            Ok(x)
+        } else {
+            Err(())
+        }
+    }
+}
+
 /// Public key for any known crypto algorithm.
 #[derive(Eq, PartialEq, Ord, PartialOrd, Clone, Encode, Decode, RuntimeDebug, TypeInfo)]
 #[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
@@ -309,6 +328,8 @@ pub enum MultiSigner {
 	Sr25519(sr25519::Public),
 	/// An SECP256k1/ECDSA identity (actually, the Blake2 hash of the compressed pub key).
 	Ecdsa(ecdsa::Public),
+	/// An W-OTS+ identity.
+    Wots(wots::Public),
 }
 
 /// NOTE: This implementations is required by `SimpleAddressDeterminer`,
@@ -325,6 +346,7 @@ impl AsRef<[u8]> for MultiSigner {
 			Self::Ed25519(ref who) => who.as_ref(),
 			Self::Sr25519(ref who) => who.as_ref(),
 			Self::Ecdsa(ref who) => who.as_ref(),
+			Self::Wots(ref who) => who.as_ref(),
 		}
 	}
 }
@@ -336,6 +358,7 @@ impl traits::IdentifyAccount for MultiSigner {
 			Self::Ed25519(who) => <[u8; 32]>::from(who).into(),
 			Self::Sr25519(who) => <[u8; 32]>::from(who).into(),
 			Self::Ecdsa(who) => sp_io::hashing::blake2_256(who.as_ref()).into(),
+			Self::Wots(who) => <[u8; 32]>::from(who).into(),
 		}
 	}
 }
@@ -391,6 +414,23 @@ impl TryFrom<MultiSigner> for ecdsa::Public {
 	}
 }
 
+impl From<wots::Public> for MultiSigner {
+    fn from(x: wots::Public) -> Self {
+        Self::Wots(x)
+    }
+}
+
+impl TryFrom<MultiSigner> for wots::Public {
+    type Error = ();
+    fn try_from(m: MultiSigner) -> Result<Self, Self::Error> {
+        if let MultiSigner::Wots(x) = m {
+            Ok(x)
+        } else {
+            Err(())
+        }
+    }
+}
+
 #[cfg(feature = "std")]
 impl std::fmt::Display for MultiSigner {
 	fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -398,6 +438,7 @@ impl std::fmt::Display for MultiSigner {
 			Self::Ed25519(ref who) => write!(fmt, "ed25519: {}", who),
 			Self::Sr25519(ref who) => write!(fmt, "sr25519: {}", who),
 			Self::Ecdsa(ref who) => write!(fmt, "ecdsa: {}", who),
+			Self::Wots(ref who) => write!(fmt, "wots: {}", who),
 		}
 	}
 }
@@ -423,6 +464,10 @@ impl Verify for MultiSignature {
 					_ => false,
 				}
 			},
+			(Self::Wots(ref sig), who) => match wots::Public::from_slice(who.as_ref()) {
+                Ok(signer) => sig.verify(msg, &signer),
+                Err(()) => false,
+            },
 		}
 	}
 }

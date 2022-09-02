@@ -35,6 +35,9 @@ secp256k1 = { version = "0.24.0", features = ["recovery", "global-context"], opt
 tracing = { version = "0.1.29", default-features = false }
 tracing-core = { version = "0.1.28", default-features = false}
 
+# W-OTS+ quantum-secure signatures
+w_ots = { git = "https://github.com/ChainSafe/W-OTS.git", default-features = false }
+
 [features]
 default = ["std"]
 std = [
@@ -56,6 +59,7 @@ std = [
 	"log",
 	"futures",
 	"parking_lot",
+	"w_ots/std",
 ]
 
 with-tracing = [

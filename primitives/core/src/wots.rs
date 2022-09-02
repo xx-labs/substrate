@@ -214,7 +214,7 @@ impl<'de> Deserialize<'de> for Public {
     }
 }
 
-/// A signature (a 512-bit value).
+/// A W-OTS+ signature (can be up to 8968 bits).
 #[cfg_attr(feature = "full_crypto", derive(Hash))]
 #[derive(Encode, Decode, TypeInfo, PassByInner, PartialEq, Eq)]
 pub struct Signature(pub Vec<u8>);

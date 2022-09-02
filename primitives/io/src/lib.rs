@@ -51,7 +51,7 @@ use sp_core::{
 	offchain::{
 		HttpError, HttpRequestId, HttpRequestStatus, OpaqueNetworkState, StorageKind, Timestamp,
 	},
-	sr25519,
+	sr25519, wots,
 	storage::StateVersion,
 	LogLevel, LogLevelFilter, OpaquePeerId, H256,
 };
@@ -1073,6 +1073,21 @@ pub trait Crypto {
 			.map_err(|_| EcdsaVerifyError::BadSignature)?;
 		Ok(pubkey.serialize())
 	}
+
+	/// Verify `w-ots+` signature.
+	///
+	/// Returns `true` when the verification was successful.
+	fn wots_verify(sig: &wots::Signature, msg: &[u8], pub_key: &wots::Public) -> bool {
+        w_ots::security::verify(msg, &sig.0, &pub_key.0).is_ok()
+    }
+
+	/// Verify `w-ots+` signature.
+	///
+	/// Returns `true` when the verification was successful.
+	#[version(2)]
+	fn wots_verify(sig: &wots::Signature, msg: &[u8], pub_key: &wots::Public) -> bool {
+        w_ots::security::verify(msg, &sig.0, &pub_key.0).is_ok()
+    }
 }
 
 /// Interface that provides functions for hashing with different algorithms.

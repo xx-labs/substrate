@@ -89,6 +89,13 @@ impl IdentifyAccount for sp_core::ecdsa::Public {
 	}
 }
 
+impl IdentifyAccount for sp_core::wots::Public {
+    type AccountId = Self;
+    fn into_account(self) -> Self {
+        self
+    }
+}
+
 /// Means of signature verification.
 pub trait Verify {
 	/// Type of the signer.
@@ -131,6 +138,15 @@ impl Verify for sp_core::ecdsa::Signature {
 		}
 	}
 }
+
+impl Verify for sp_core::wots::Signature {
+    type Signer = sp_core::wots::Public;
+
+    fn verify<L: Lazy<[u8]>>(&self, mut msg: L, signer: &sp_core::wots::Public) -> bool {
+        sp_io::crypto::wots_verify(self, msg.get(), signer)
+    }
+}
+
 
 /// Means of signature verification of an application key.
 pub trait AppVerify {
