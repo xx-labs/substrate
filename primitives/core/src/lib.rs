@@ -68,6 +68,7 @@ pub mod testing;
 #[cfg(feature = "std")]
 pub mod traits;
 pub mod uint;
+pub mod wots;
 
 pub use self::{
 	hash::{convert_hash, H160, H256, H512},

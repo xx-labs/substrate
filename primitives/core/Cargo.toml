@@ -61,6 +61,9 @@ ss58-registry = { version = "1.18.0", default-features = false }
 sp-core-hashing = { version = "4.0.0", path = "./hashing", default-features = false, optional = true }
 sp-runtime-interface = { version = "6.0.0", default-features = false, path = "../runtime-interface" }
 
+# W-OTS+ quantum-secure signatures
+w_ots = { git = "https://github.com/ChainSafe/W-OTS.git", default-features = false, optional = true }
+
 [dev-dependencies]
 sp-serializer = { version = "4.0.0-dev", path = "../serializer" }
 hex-literal = "0.3.4"
@@ -121,6 +124,7 @@ std = [
 	"futures/thread-pool",
 	"libsecp256k1/std",
 	"dyn-clonable",
+	"w_ots/std",
 ]
 
 # This feature enables all crypto primitives for `no_std` builds like microcontrollers
@@ -136,4 +140,5 @@ full_crypto = [
 	"sp-core-hashing",
 	"sp-runtime-interface/disable_target_static_assertions",
 	"merlin",
+	"w_ots",
 ]
