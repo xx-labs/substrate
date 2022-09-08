@@ -216,16 +216,16 @@ parameter_types! {
 	pub const OffendingValidatorsThreshold: Perbill = Perbill::from_percent(75);
 }
 
-thread_local! {
-	pub static REWARD_REMAINDER_UNBALANCED: RefCell<u128> = RefCell::new(0);
+parameter_types! {
+	pub static RewardRemainderUnbalanced: u128 = 0;
 }
 
 pub struct RewardRemainderMock;
 
 impl OnUnbalanced<NegativeImbalanceOf<Test>> for RewardRemainderMock {
 	fn on_nonzero_unbalanced(amount: NegativeImbalanceOf<Test>) {
-		REWARD_REMAINDER_UNBALANCED.with(|v| {
-			*v.borrow_mut() += amount.peek();
+		RewardRemainderUnbalanced::mutate(|v| {
+			*v += amount.peek();
 		});
 		drop(amount);
 	}
