@@ -1208,6 +1208,8 @@ where
 			frame_system::CheckNonce::<Runtime>::from(nonce),
 			frame_system::CheckWeight::<Runtime>::new(),
 			pallet_asset_tx_payment::ChargeAssetTxPayment::<Runtime>::from(tip, None),
+			#[cfg(feature = "quantum-secure")]
+			frame_system::SetNextPk::<Runtime>::from(account.clone()),
 		);
 		let raw_payload = SignedPayload::new(call, extra)
 			.map_err(|e| {
@@ -1666,6 +1668,7 @@ pub type BlockId = generic::BlockId<Block>;
 /// When you change this, you **MUST** modify [`sign`] in `bin/node/testing/src/keyring.rs`!
 ///
 /// [`sign`]: <../../testing/src/keyring.rs.html>
+#[cfg(not(feature = "quantum-secure"))]
 pub type SignedExtra = (
 	frame_system::CheckNonZeroSender<Runtime>,
 	frame_system::CheckSpecVersion<Runtime>,
@@ -1675,6 +1678,19 @@ pub type SignedExtra = (
 	frame_system::CheckNonce<Runtime>,
 	frame_system::CheckWeight<Runtime>,
 	pallet_asset_tx_payment::ChargeAssetTxPayment<Runtime>,
+);
+
+#[cfg(feature = "quantum-secure")]
+pub type SignedExtra = (
+	frame_system::CheckNonZeroSender<Runtime>,
+	frame_system::CheckSpecVersion<Runtime>,
+	frame_system::CheckTxVersion<Runtime>,
+	frame_system::CheckGenesis<Runtime>,
+	frame_system::CheckEra<Runtime>,
+	frame_system::CheckNonce<Runtime>,
+	frame_system::CheckWeight<Runtime>,
+	pallet_asset_tx_payment::ChargeAssetTxPayment<Runtime>,
+	frame_system::SetNextPk<Runtime>,
 );
 /// Unchecked extrinsic type as expected by this runtime.
 pub type UncheckedExtrinsic = generic::UncheckedExtrinsic<Address, Call, Signature, SignedExtra>;

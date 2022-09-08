@@ -298,6 +298,12 @@ try-runtime = [
 	"pallet-vesting/try-runtime",
 	"pallet-whitelist/try-runtime",
 ]
+
+quantum-secure = [
+	"sp-runtime/quantum-secure",
+	"frame-system/quantum-secure",
+]
+
 # Make contract callable functions marked as __unstable__ available. Do not enable
 # on live chains as those are subject to change.
 contracts-unstable-interface = ["pallet-contracts/unstable-interface"]

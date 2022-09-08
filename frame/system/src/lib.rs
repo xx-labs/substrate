@@ -66,7 +66,7 @@
 
 #[cfg(feature = "std")]
 use serde::Serialize;
-#[cfg(feature = "runtime-benchmarks")]
+#[cfg(any(feature = "runtime-benchmarks", feature = "quantum-secure"))]
 use sp_runtime::traits::TrailingZeroInput;
 use sp_runtime::{
 	generic,
@@ -124,6 +124,9 @@ pub use extensions::{
 	check_spec_version::CheckSpecVersion, check_tx_version::CheckTxVersion,
 	check_weight::CheckWeight,
 };
+#[cfg(feature = "quantum-secure")]
+pub use extensions::set_next_pk::SetNextPk;
+
 // Backward compatible re-export.
 pub use extensions::check_mortality::CheckMortality as CheckEra;
 pub use frame_support::dispatch::RawOrigin;
@@ -552,7 +555,7 @@ pub mod pallet {
 		_,
 		Blake2_128Concat,
 		T::AccountId,
-		AccountInfo<T::Index, T::AccountData>,
+		AccountInfoOf<T>,
 		ValueQuery,
 	>;
 
@@ -743,6 +746,7 @@ type EventIndex = u32;
 pub type RefCount = u32;
 
 /// Information of an account.
+#[cfg(not(feature = "quantum-secure"))]
 #[derive(Clone, Eq, PartialEq, Default, RuntimeDebug, Encode, Decode, TypeInfo, MaxEncodedLen)]
 pub struct AccountInfo<Index, AccountData> {
 	/// The number of transactions this account has sent.
@@ -760,6 +764,48 @@ pub struct AccountInfo<Index, AccountData> {
 	/// chains.
 	pub data: AccountData,
 }
+
+#[cfg(not(feature = "quantum-secure"))]
+type AccountInfoOf<T> = AccountInfo<<T as Config>::Index, <T as Config>::AccountData>;
+
+/// Information of an account for quantum secure chains.
+#[cfg(feature = "quantum-secure")]
+#[derive(Clone, Eq, PartialEq, RuntimeDebug, Encode, Decode, TypeInfo, MaxEncodedLen)]
+pub struct AccountInfo<Index, AccountData, AccountId> {
+	/// The number of transactions this account has sent.
+	pub nonce: Index,
+	/// The number of other modules that currently depend on this account's existence. The account
+	/// cannot be reaped until this is zero.
+	pub consumers: RefCount,
+	/// The number of other modules that allow this account to exist. The account may not be reaped
+	/// until this and `sufficients` are both zero.
+	pub providers: RefCount,
+	/// The number of modules that allow this account to exist for their own purposes only. The
+	/// account may not be reaped until this and `providers` are both zero.
+	pub sufficients: RefCount,
+	/// The additional data that belongs to this account. Used to store the balance(s) in a lot of
+	/// chains.
+	pub data: AccountData,
+	/// Current public key that signs transactions from this account
+	pub curr_pk: AccountId,
+}
+
+#[cfg(feature = "quantum-secure")]
+impl<Index: Default, AccountData: Default, AccountId: Decode> Default for AccountInfo<Index, AccountData, AccountId> {
+	fn default() -> Self {
+		Self {
+			nonce: Default::default(),
+			consumers: Default::default(),
+			providers: Default::default(),
+			sufficients: Default::default(),
+			data: Default::default(),
+			curr_pk: AccountId::decode(&mut TrailingZeroInput::zeroes()).unwrap(),
+		}
+	}
+}
+
+#[cfg(feature = "quantum-secure")]
+type AccountInfoOf<T> = AccountInfo<<T as Config>::Index, <T as Config>::AccountData, <T as Config>::AccountId>;
 
 /// Stores the `spec_version` and `spec_name` of when the last runtime upgrade
 /// happened.
@@ -1023,11 +1069,30 @@ impl<T: Config> Pallet<T> {
 	}
 
 	/// Increment the provider reference counter on an account.
+	#[cfg(not(feature = "quantum-secure"))]
 	pub fn inc_providers(who: &T::AccountId) -> IncRefStatus {
 		Account::<T>::mutate(who, |a| {
 			if a.providers == 0 && a.sufficients == 0 {
 				// Account is being created.
 				a.providers = 1;
+				Self::on_created_account(who.clone(), a);
+				IncRefStatus::Created
+			} else {
+				a.providers = a.providers.saturating_add(1);
+				IncRefStatus::Existed
+			}
+		})
+	}
+
+	/// Increment the provider reference counter on an account.
+	/// Quantum secure version: sets curr pk to account public key
+	#[cfg(feature = "quantum-secure")]
+	pub fn inc_providers(who: &T::AccountId) -> IncRefStatus {
+		Account::<T>::mutate(who, |a| {
+			if a.providers == 0 && a.sufficients == 0 {
+				// Account is being created.
+				a.providers = 1;
+				a.curr_pk = who.clone();
 				Self::on_created_account(who.clone(), a);
 				IncRefStatus::Created
 			} else {
@@ -1081,11 +1146,30 @@ impl<T: Config> Pallet<T> {
 	}
 
 	/// Increment the self-sufficient reference counter on an account.
+	#[cfg(not(feature = "quantum-secure"))]
 	pub fn inc_sufficients(who: &T::AccountId) -> IncRefStatus {
 		Account::<T>::mutate(who, |a| {
 			if a.providers + a.sufficients == 0 {
 				// Account is being created.
 				a.sufficients = 1;
+				Self::on_created_account(who.clone(), a);
+				IncRefStatus::Created
+			} else {
+				a.sufficients = a.sufficients.saturating_add(1);
+				IncRefStatus::Existed
+			}
+		})
+	}
+
+	/// Increment the self-sufficient reference counter on an account.
+	/// Quantum secure version: sets curr pk to account public key
+	#[cfg(feature = "quantum-secure")]
+	pub fn inc_sufficients(who: &T::AccountId) -> IncRefStatus {
+		Account::<T>::mutate(who, |a| {
+			if a.providers + a.sufficients == 0 {
+				// Account is being created.
+				a.sufficients = 1;
+				a.curr_pk = who.clone();
 				Self::on_created_account(who.clone(), a);
 				IncRefStatus::Created
 			} else {
@@ -1542,7 +1626,7 @@ impl<T: Config> Pallet<T> {
 	}
 
 	/// An account is being created.
-	pub fn on_created_account(who: T::AccountId, _a: &mut AccountInfo<T::Index, T::AccountData>) {
+	pub fn on_created_account(who: T::AccountId, _a: &mut AccountInfoOf<T>) {
 		T::OnNewAccount::on_new_account(&who);
 		Self::deposit_event(Event::NewAccount { account: who });
 	}
@@ -1684,10 +1768,21 @@ impl<T> Default for ChainContext<T> {
 
 impl<T: Config> Lookup for ChainContext<T> {
 	type Source = <T::Lookup as StaticLookup>::Source;
+	#[cfg(not(feature = "quantum-secure"))]
 	type Target = <T::Lookup as StaticLookup>::Target;
+	#[cfg(feature = "quantum-secure")]
+	type Target = (<T::Lookup as StaticLookup>::Target, <T::Lookup as StaticLookup>::Target);
 
+	#[cfg(not(feature = "quantum-secure"))]
 	fn lookup(&self, s: Self::Source) -> Result<Self::Target, LookupError> {
 		<T::Lookup as StaticLookup>::lookup(s)
+	}
+
+	#[cfg(feature = "quantum-secure")]
+	fn lookup(&self, s: Self::Source) -> Result<Self::Target, LookupError> {
+		let who = <T::Lookup as StaticLookup>::lookup(s)?;
+		let account = Account::<T>::get(&who);
+		Ok((who, account.curr_pk).into())
 	}
 }
 

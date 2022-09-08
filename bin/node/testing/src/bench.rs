@@ -303,8 +303,11 @@ impl<'a> Iterator for BlockContentIterator<'a> {
 		let signed = self.keyring.sign(
 			CheckedExtrinsic {
 				signed: Some((
-					sender,
+					sender.clone(),
+					#[cfg(not(feature = "quantum-secure"))]
 					signed_extra(0, kitchensink_runtime::ExistentialDeposit::get() + 1),
+					#[cfg(feature = "quantum-secure")]
+					signed_extra(0, kitchensink_runtime::ExistentialDeposit::get() + 1, sender),
 				)),
 				function: match self.content.block_type {
 					BlockType::RandomTransfersKeepAlive =>

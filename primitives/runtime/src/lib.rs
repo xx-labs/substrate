@@ -48,8 +48,10 @@ use sp_core::{
 	crypto::{self, ByteArray},
 	ecdsa, ed25519,
 	hash::{H256, H512},
-	sr25519, wots,
+	sr25519,
 };
+#[cfg(feature = "quantum-secure")]
+use sp_core::wots;
 use sp_std::prelude::*;
 
 use codec::{Decode, Encode, MaxEncodedLen};
@@ -247,6 +249,7 @@ pub enum MultiSignature {
 	/// An ECDSA/SECP256k1 signature.
 	Ecdsa(ecdsa::Signature),
 	/// A W-OTS+ signature.
+	#[cfg(feature = "quantum-secure")]
     Wots(wots::Signature),
 }
 
@@ -301,12 +304,14 @@ impl TryFrom<MultiSignature> for ecdsa::Signature {
 	}
 }
 
+#[cfg(feature = "quantum-secure")]
 impl From<wots::Signature> for MultiSignature {
     fn from(x: wots::Signature) -> Self {
         Self::Wots(x)
     }
 }
 
+#[cfg(feature = "quantum-secure")]
 impl TryFrom<MultiSignature> for wots::Signature {
     type Error = ();
     fn try_from(m: MultiSignature) -> Result<Self, Self::Error> {
@@ -329,6 +334,7 @@ pub enum MultiSigner {
 	/// An SECP256k1/ECDSA identity (actually, the Blake2 hash of the compressed pub key).
 	Ecdsa(ecdsa::Public),
 	/// An W-OTS+ identity.
+	#[cfg(feature = "quantum-secure")]
     Wots(wots::Public),
 }
 
@@ -346,6 +352,7 @@ impl AsRef<[u8]> for MultiSigner {
 			Self::Ed25519(ref who) => who.as_ref(),
 			Self::Sr25519(ref who) => who.as_ref(),
 			Self::Ecdsa(ref who) => who.as_ref(),
+			#[cfg(feature = "quantum-secure")]
 			Self::Wots(ref who) => who.as_ref(),
 		}
 	}
@@ -358,6 +365,7 @@ impl traits::IdentifyAccount for MultiSigner {
 			Self::Ed25519(who) => <[u8; 32]>::from(who).into(),
 			Self::Sr25519(who) => <[u8; 32]>::from(who).into(),
 			Self::Ecdsa(who) => sp_io::hashing::blake2_256(who.as_ref()).into(),
+			#[cfg(feature = "quantum-secure")]
 			Self::Wots(who) => <[u8; 32]>::from(who).into(),
 		}
 	}
@@ -414,12 +422,14 @@ impl TryFrom<MultiSigner> for ecdsa::Public {
 	}
 }
 
+#[cfg(feature = "quantum-secure")]
 impl From<wots::Public> for MultiSigner {
     fn from(x: wots::Public) -> Self {
         Self::Wots(x)
     }
 }
 
+#[cfg(feature = "quantum-secure")]
 impl TryFrom<MultiSigner> for wots::Public {
     type Error = ();
     fn try_from(m: MultiSigner) -> Result<Self, Self::Error> {
@@ -438,6 +448,7 @@ impl std::fmt::Display for MultiSigner {
 			Self::Ed25519(ref who) => write!(fmt, "ed25519: {}", who),
 			Self::Sr25519(ref who) => write!(fmt, "sr25519: {}", who),
 			Self::Ecdsa(ref who) => write!(fmt, "ecdsa: {}", who),
+			#[cfg(feature = "quantum-secure")]
 			Self::Wots(ref who) => write!(fmt, "wots: {}", who),
 		}
 	}
@@ -464,6 +475,7 @@ impl Verify for MultiSignature {
 					_ => false,
 				}
 			},
+			#[cfg(feature = "quantum-secure")]
 			(Self::Wots(ref sig), who) => match wots::Public::from_slice(who.as_ref()) {
                 Ok(signer) => sig.verify(msg, &signer),
                 Err(()) => false,

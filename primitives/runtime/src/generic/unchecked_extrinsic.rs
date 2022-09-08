@@ -133,6 +133,12 @@ impl<Address, Call, Signature, Extra: SignedExtension> Extrinsic
 	}
 }
 
+#[cfg(not(feature = "quantum-secure"))]
+type TargetOf<AccountId> = AccountId;
+
+#[cfg(feature = "quantum-secure")]
+type TargetOf<AccountId> = (AccountId, AccountId);
+
 impl<Address, AccountId, Call, Signature, Extra, Lookup> Checkable<Lookup>
 	for UncheckedExtrinsic<Address, Call, Signature, Extra>
 where
@@ -142,10 +148,11 @@ where
 	<Signature as traits::Verify>::Signer: IdentifyAccount<AccountId = AccountId>,
 	Extra: SignedExtension<AccountId = AccountId>,
 	AccountId: Member + MaybeDisplay,
-	Lookup: traits::Lookup<Source = Address, Target = AccountId>,
+	Lookup: traits::Lookup<Source = Address, Target = TargetOf<AccountId>>,
 {
 	type Checked = CheckedExtrinsic<AccountId, Call, Extra>;
 
+	#[cfg(not(feature = "quantum-secure"))]
 	fn check(self, lookup: &Lookup) -> Result<Self::Checked, TransactionValidityError> {
 		Ok(match self.signature {
 			Some((signed, signature, extra)) => {
@@ -157,6 +164,23 @@ where
 
 				let (function, extra, _) = raw_payload.deconstruct();
 				CheckedExtrinsic { signed: Some((signed, extra)), function }
+			},
+			None => CheckedExtrinsic { signed: None, function: self.function },
+		})
+	}
+
+	#[cfg(feature = "quantum-secure")]
+	fn check(self, lookup: &Lookup) -> Result<Self::Checked, TransactionValidityError> {
+		Ok(match self.signature {
+			Some((signed, signature, extra)) => {
+				let signed = lookup.lookup(signed)?;
+				let raw_payload = SignedPayload::new(self.function, extra)?;
+				if !raw_payload.using_encoded(|payload| signature.verify(payload, &signed.1)) {
+					return Err(InvalidTransaction::BadProof.into())
+				}
+
+				let (function, extra, _) = raw_payload.deconstruct();
+				CheckedExtrinsic { signed: Some((signed.0, extra)), function }
 			},
 			None => CheckedExtrinsic { signed: None, function: self.function },
 		})

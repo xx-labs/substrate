@@ -86,6 +86,7 @@ pub fn to_session_keys(
 }
 
 /// Returns transaction extra.
+#[cfg(not(feature = "quantum-secure"))]
 pub fn signed_extra(nonce: Index, extra_fee: Balance) -> SignedExtra {
 	(
 		frame_system::CheckNonZeroSender::new(),
@@ -96,6 +97,22 @@ pub fn signed_extra(nonce: Index, extra_fee: Balance) -> SignedExtra {
 		frame_system::CheckNonce::from(nonce),
 		frame_system::CheckWeight::new(),
 		pallet_asset_tx_payment::ChargeAssetTxPayment::from(extra_fee, None),
+	)
+}
+
+/// Returns transaction extra with next PK for quantum secure feature.
+#[cfg(feature = "quantum-secure")]
+pub fn signed_extra(nonce: Index, extra_fee: Balance, account: AccountId) -> SignedExtra {
+	(
+		frame_system::CheckNonZeroSender::new(),
+		frame_system::CheckSpecVersion::new(),
+		frame_system::CheckTxVersion::new(),
+		frame_system::CheckGenesis::new(),
+		frame_system::CheckEra::from(Era::mortal(256, 0)),
+		frame_system::CheckNonce::from(nonce),
+		frame_system::CheckWeight::new(),
+		pallet_asset_tx_payment::ChargeAssetTxPayment::from(extra_fee, None),
+		frame_system::SetNextPk::from(account),
 	)
 }
 

@@ -165,6 +165,12 @@ runtime-benchmarks = ["kitchensink-runtime/runtime-benchmarks", "frame-benchmark
 # in the near future.
 try-runtime = ["kitchensink-runtime/try-runtime", "try-runtime-cli"]
 
+quantum-secure = [
+	"sp-runtime/quantum-secure",
+	"frame-system/quantum-secure",
+	"kitchensink-runtime/quantum-secure",
+]
+
 [[bench]]
 name = "transaction_pool"
 harness = false
