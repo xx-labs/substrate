@@ -57,6 +57,89 @@ pub mod v10 {
 			}
 		}
 	}
+
+	/// Special migration for xx network's custom Staking pallet
+	/// This combines V8, V9 and V10 migrations into one
+	pub struct MigrateFromV7dot5ToV10<T>(sp_std::marker::PhantomData<T>);
+	impl<T: Config> OnRuntimeUpgrade for MigrateFromV7dot5ToV10<T> {
+		fn on_runtime_upgrade() -> frame_support::weights::Weight {
+			if StorageVersion::<T>::get() == Releases::V7_5_0 {
+				log!(info, "migrating to Releases::V10_0_0");
+				// Start with VoterList migration
+				log!(info, "generating voter list");
+				// Regenerate bags with all Validators and Nominators
+				// This performs both the V8 and V9 migrations at once
+				let migrated = T::VoterList::unsafe_regenerate(
+					Validators::<T>::iter().map(|(id, _)| id).chain(Nominators::<T>::iter().map(|(id, _)| id)),
+					Pallet::<T>::weight_of_fn(),
+				);
+				debug_assert_eq!(T::VoterList::try_state(), Ok(()));
+				log!(
+					info,
+					"completed voter list generation with {} voters migrated",
+					migrated,
+				);
+
+				// Now do the V10 migration
+				log!(info, "applying any pending slashes");
+				let pending_slashes = <Pallet<T> as Store>::UnappliedSlashes::iter().take(512);
+				for (era, slashes) in pending_slashes {
+					for slash in slashes {
+						// in the old slashing scheme, the slash era was the key at which we read
+						// from `UnappliedSlashes`.
+						log!(warn, "prematurely applying a slash ({:?}) for era {:?}", slash, era);
+						slashing::apply_slash::<T>(slash, era);
+					}
+				}
+
+				EarliestUnappliedSlash::<T>::kill();
+				StorageVersion::<T>::put(Releases::V10_0_0);
+
+				log!(info, "MigrateFromV7dot5ToV10 executed successfully");
+				T::BlockWeights::get().max_block
+			} else {
+				log!(warn, "MigrateFromV7dot5ToV10 should be removed.");
+				T::DbWeight::get().reads(1)
+			}
+		}
+
+		#[cfg(feature = "try-runtime")]
+		fn pre_upgrade() -> Result<(), &'static str> {
+			use frame_support::traits::OnRuntimeUpgradeHelpersExt;
+			// Ensure storage version
+			frame_support::ensure!(
+				StorageVersion::<T>::get() == Releases::V7_5_0,
+				"must upgrade linearly"
+			);
+
+			// Get total number of Validators and Nominators
+			let prev_count = Nominators::<T>::count() + Validators::<T>::count();
+			Self::set_temp_storage(prev_count, "prev");
+			log!(info, "migration passes PRE checks ✅, expecting {} voters", prev_count);
+			Ok(())
+		}
+
+		#[cfg(feature = "try-runtime")]
+		fn post_upgrade() -> Result<(), &'static str> {
+			use frame_support::traits::OnRuntimeUpgradeHelpersExt;
+			// Check storage version is upgraded
+			frame_support::ensure!(
+				StorageVersion::<T>::get() == Releases::V10_0_0,
+				"Incorrect storage version after migration. Expected V10_0_0!"
+			);
+
+			// Ensure voter list is in a consistent state
+			T::VoterList::try_state().map_err(|_| "VoterList is not in a sane state.")?;
+
+			// Confirm all Validators and Nominators were correctly migrated
+			let post_count = T::VoterList::count();
+			let prev_count = Self::get_temp_storage::<u32>("prev").unwrap();
+			assert!(post_count == prev_count);
+
+			log!(info, "migration passes POST checks ✅");
+			Ok(())
+		}
+	}
 }
 
 pub mod v9 {
