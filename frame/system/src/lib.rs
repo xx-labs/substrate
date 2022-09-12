@@ -559,6 +559,17 @@ pub mod pallet {
 		ValueQuery,
 	>;
 
+	#[cfg(feature = "quantum-secure")]
+	/// The nonce and current public key information for killed quantum secure accounts
+	#[pallet::storage]
+	pub type KilledAccount<T: Config> = StorageMap<
+		_,
+		Blake2_128Concat,
+		T::AccountId,
+		KilledAccountInfo<T::Index, T::AccountId>,
+		ValueQuery,
+	>;
+
 	/// Total extrinsics count for the current block.
 	#[pallet::storage]
 	pub(super) type ExtrinsicCount<T: Config> = StorageValue<_, u32>;
@@ -806,6 +817,25 @@ impl<Index: Default, AccountData: Default, AccountId: Decode> Default for Accoun
 
 #[cfg(feature = "quantum-secure")]
 type AccountInfoOf<T> = AccountInfo<<T as Config>::Index, <T as Config>::AccountData, <T as Config>::AccountId>;
+
+#[cfg(feature = "quantum-secure")]
+#[derive(Clone, Eq, PartialEq, RuntimeDebug, Encode, Decode, TypeInfo, MaxEncodedLen)]
+pub struct KilledAccountInfo<Index, AccountId> {
+	/// The number of transactions this account had sent before being killed.
+	pub nonce: Index,
+	/// The public key that can sign a transactions from this account.
+	pub curr_pk: AccountId,
+}
+
+#[cfg(feature = "quantum-secure")]
+impl<Index: Default, AccountId: Decode> Default for KilledAccountInfo<Index, AccountId> {
+	fn default() -> Self {
+		Self {
+			nonce: Default::default(),
+			curr_pk: AccountId::decode(&mut TrailingZeroInput::zeroes()).unwrap(),
+		}
+	}
+}
 
 /// Stores the `spec_version` and `spec_name` of when the last runtime upgrade
 /// happened.
@@ -1120,7 +1150,10 @@ impl<T: Config> Pallet<T> {
 					(1, 0, 0) => {
 						// No providers left (and no consumers) and no sufficients. Account dead.
 
+						#[cfg(not(feature = "quantum-secure"))]
 						Pallet::<T>::on_killed_account(who.clone());
+						#[cfg(feature = "quantum-secure")]
+						Pallet::<T>::on_killed_account(who.clone(), account);
 						Ok(DecRefStatus::Reaped)
 					},
 					(1, c, _) if c > 0 => {
@@ -1194,7 +1227,10 @@ impl<T: Config> Pallet<T> {
 				}
 				match (account.sufficients, account.providers) {
 					(0, 0) | (1, 0) => {
+						#[cfg(not(feature = "quantum-secure"))]
 						Pallet::<T>::on_killed_account(who.clone());
+						#[cfg(feature = "quantum-secure")]
+						Pallet::<T>::on_killed_account(who.clone(), account);
 						DecRefStatus::Reaped
 					},
 					(x, _) => {
@@ -1626,13 +1662,39 @@ impl<T: Config> Pallet<T> {
 	}
 
 	/// An account is being created.
+	#[cfg(not(feature = "quantum-secure"))]
 	pub fn on_created_account(who: T::AccountId, _a: &mut AccountInfoOf<T>) {
 		T::OnNewAccount::on_new_account(&who);
 		Self::deposit_event(Event::NewAccount { account: who });
 	}
 
+	/// An account is being created.
+	#[cfg(feature = "quantum-secure")]
+	pub fn on_created_account(who: T::AccountId, a: &mut AccountInfoOf<T>) {
+		let info = KilledAccount::<T>::take(&who);
+		if !info.nonce.is_zero() {
+			a.nonce = info.nonce;
+			a.curr_pk = info.curr_pk;
+		}
+		T::OnNewAccount::on_new_account(&who);
+		Self::deposit_event(Event::NewAccount { account: who });
+	}
+
 	/// Do anything that needs to be done after an account has been killed.
+	#[cfg(not(feature = "quantum-secure"))]
 	fn on_killed_account(who: T::AccountId) {
+		T::OnKilledAccount::on_killed_account(&who);
+		Self::deposit_event(Event::KilledAccount { account: who });
+	}
+
+	/// Do anything that needs to be done after an account has been killed.
+	#[cfg(feature = "quantum-secure")]
+	fn on_killed_account(who: T::AccountId, a: AccountInfoOf<T>) {
+		// Store account nonce and current public key if the account
+		// is using quantum secure cryptography (if the curr_pk differs from account id)
+		if who != a.curr_pk {
+			KilledAccount::<T>::insert(&who, KilledAccountInfo { nonce: a.nonce, curr_pk: a.curr_pk });
+		}
 		T::OnKilledAccount::on_killed_account(&who);
 		Self::deposit_event(Event::KilledAccount { account: who });
 	}
