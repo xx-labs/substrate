@@ -140,6 +140,8 @@ mod tests {
 					providers: 0,
 					sufficients: 0,
 					data: 0,
+					#[cfg(feature = "quantum-secure")]
+					curr_pk: 1,
 				},
 			);
 			let info = DispatchInfo::default();

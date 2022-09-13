@@ -46,6 +46,10 @@ benchmarks_instance_pallet! {
 		// Transfer `e - 1` existential deposits + 1 unit, which guarantees to create one account,
 		// and reap this user.
 		let recipient: T::AccountId = account("recipient", 0, SEED);
+
+		#[cfg(feature = "quantum-secure")]
+		frame_system::Pallet::<T>::set_curr_pk(caller.clone(), recipient.clone());
+
 		let recipient_lookup = T::Lookup::unlookup(recipient.clone());
 		let transfer_amount = existential_deposit.saturating_mul((ED_MULTIPLIER - 1).into()) + 1u32.into();
 	}: transfer(RawOrigin::Signed(caller.clone()), recipient_lookup, transfer_amount)
@@ -135,6 +139,10 @@ benchmarks_instance_pallet! {
 
 		// Transfer `e - 1` existential deposits + 1 unit, which guarantees to create one account, and reap this user.
 		let recipient: T::AccountId = account("recipient", 0, SEED);
+
+		#[cfg(feature = "quantum-secure")]
+		frame_system::Pallet::<T>::set_curr_pk(source.clone(), recipient.clone());
+
 		let recipient_lookup = T::Lookup::unlookup(recipient.clone());
 		let transfer_amount = existential_deposit.saturating_mul((ED_MULTIPLIER - 1).into()) + 1u32.into();
 	}: force_transfer(RawOrigin::Root, source_lookup, recipient_lookup, transfer_amount)
@@ -188,6 +196,9 @@ benchmarks_instance_pallet! {
 		let existential_deposit = T::ExistentialDeposit::get();
 		let balance = existential_deposit.saturating_mul(ED_MULTIPLIER.into());
 		let _ = <Balances<T, I> as Currency<_>>::make_free_balance_be(&caller, balance);
+
+		#[cfg(feature = "quantum-secure")]
+		frame_system::Pallet::<T>::set_curr_pk(caller.clone(), recipient.clone());
 	}: _(RawOrigin::Signed(caller.clone()), recipient_lookup, false)
 	verify {
 		assert!(Balances::<T, I>::free_balance(&caller).is_zero());

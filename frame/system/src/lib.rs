@@ -1556,6 +1556,15 @@ impl<T: Config> Pallet<T> {
 		<Number<T>>::put(n);
 	}
 
+	/// Set the curr_pk field of a given account
+	/// Useful for tests or benchmarks
+	#[cfg(all(any(feature = "runtime-benchmarks", test), feature = "quantum-secure"))]
+	pub fn set_curr_pk(who: T::AccountId, pk: T::AccountId) {
+		Account::<T>::mutate(&who, |a| {
+			a.curr_pk = pk
+		});
+	}
+
 	/// Sets the index of extrinsic that is currently executing.
 	#[cfg(any(feature = "std", test))]
 	pub fn set_extrinsic_index(extrinsic_index: u32) {

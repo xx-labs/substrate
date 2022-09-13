@@ -43,7 +43,15 @@ fn stored_map_works() {
 
 		assert_eq!(
 			Account::<Test>::get(0),
-			AccountInfo { nonce: 0, providers: 1, consumers: 0, sufficients: 0, data: 42 }
+			AccountInfo {
+				nonce: 0,
+				providers: 1,
+				consumers: 0,
+				sufficients: 0,
+				data: 42,
+				#[cfg(feature = "quantum-secure")]
+				curr_pk: 0,
+			}
 		);
 
 		assert_ok!(System::inc_consumers(&0));
@@ -651,4 +659,66 @@ fn ensure_signed_stuff_works() {
 		let successful_origin: Origin = EnsureSignedBy::<Members, _>::successful_origin();
 		assert_ok!(EnsureSignedBy::<Members, _>::try_origin(successful_origin));
 	}
+}
+
+#[cfg(feature = "quantum-secure")]
+#[test]
+fn killed_quantum_acount_saves_info_and_restores_on_reopen() {
+	new_test_ext().execute_with(|| {
+		assert_ok!(System::insert(&0, 42));
+		assert!(!System::is_provider_required(&0));
+
+		assert_eq!(
+			Account::<Test>::get(0),
+			AccountInfo {
+				nonce: 0,
+				providers: 1,
+				consumers: 0,
+				sufficients: 0,
+				data: 42,
+				curr_pk: 0,
+			}
+		);
+
+		assert_ok!(System::inc_consumers(&0));
+		assert!(System::is_provider_required(&0));
+
+		assert_ok!(System::insert(&0, 69));
+		assert!(System::is_provider_required(&0));
+
+		System::dec_consumers(&0);
+		assert!(!System::is_provider_required(&0));
+
+		System::set_curr_pk(0, 1);
+		System::inc_account_nonce(0);
+
+		assert!(KILLED.with(|r| r.borrow().is_empty()));
+		assert_ok!(System::remove(&0));
+		assert_eq!(KILLED.with(|r| r.borrow().clone()), vec![0u64]);
+
+		assert_eq!(
+			KilledAccount::<Test>::get(0),
+			KilledAccountInfo {
+				nonce: 1,
+				curr_pk: 1,
+			}
+		);
+
+		// Reopen the account
+		assert_ok!(System::insert(&0, 42));
+		assert!(!System::is_provider_required(&0));
+
+		// Confirm nonce and curr_pk are not reset
+		assert_eq!(
+			Account::<Test>::get(0),
+			AccountInfo {
+				nonce: 1,
+				providers: 1,
+				consumers: 0,
+				sufficients: 0,
+				data: 42,
+				curr_pk: 1,
+			}
+		);
+	})
 }

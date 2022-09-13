@@ -302,6 +302,7 @@ try-runtime = [
 quantum-secure = [
 	"sp-runtime/quantum-secure",
 	"frame-system/quantum-secure",
+	"pallet-balances/quantum-secure",
 ]
 
 # Make contract callable functions marked as __unstable__ available. Do not enable

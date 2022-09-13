@@ -41,3 +41,7 @@ std = [
 ]
 runtime-benchmarks = ["frame-benchmarking/runtime-benchmarks"]
 try-runtime = ["frame-support/try-runtime"]
+quantum-secure = [
+	"sp-runtime/quantum-secure",
+	"frame-system/quantum-secure",
+]
