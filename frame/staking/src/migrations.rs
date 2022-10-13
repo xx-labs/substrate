@@ -20,6 +20,155 @@ use super::*;
 use frame_election_provider_support::SortedListProvider;
 use frame_support::traits::OnRuntimeUpgrade;
 
+pub mod v12 {
+	use super::*;
+	use frame_support::{pallet_prelude::ValueQuery, storage_alias};
+
+	#[storage_alias]
+	type HistoryDepth<T: Config> = StorageValue<Pallet<T>, u32, ValueQuery>;
+
+	/// Clean up `HistoryDepth` from storage.
+	///
+	/// We will be depending on the configurable value of `HistoryDepth` post
+	/// this release.
+	pub struct MigrateToV12<T>(sp_std::marker::PhantomData<T>);
+	impl<T: Config> OnRuntimeUpgrade for MigrateToV12<T> {
+		#[cfg(feature = "try-runtime")]
+		fn pre_upgrade() -> Result<Vec<u8>, &'static str> {
+			frame_support::ensure!(
+				StorageVersion::<T>::get() == Releases::V11_0_0,
+				"Expected v11 before upgrading to v12"
+			);
+
+			if HistoryDepth::<T>::exists() {
+				frame_support::ensure!(
+					T::HistoryDepth::get() == HistoryDepth::<T>::get(),
+					"Provided value of HistoryDepth should be same as the existing storage value"
+				);
+			} else {
+				log::info!("No HistoryDepth in storage; nothing to remove");
+			}
+
+			Ok(Default::default())
+		}
+
+		fn on_runtime_upgrade() -> frame_support::weights::Weight {
+			if StorageVersion::<T>::get() == Releases::V11_0_0 {
+				HistoryDepth::<T>::kill();
+				StorageVersion::<T>::put(Releases::V12_0_0);
+
+				log!(info, "v12 applied successfully");
+				T::DbWeight::get().reads_writes(1, 2)
+			} else {
+				log!(warn, "Skipping v12, should be removed");
+				T::DbWeight::get().reads(1)
+			}
+		}
+
+		#[cfg(feature = "try-runtime")]
+		fn post_upgrade(_state: Vec<u8>) -> Result<(), &'static str> {
+			frame_support::ensure!(
+				StorageVersion::<T>::get() == crate::Releases::V12_0_0,
+				"v12 not applied"
+			);
+			Ok(())
+		}
+	}
+}
+
+pub mod v11 {
+	use super::*;
+	use frame_support::{
+		storage::migration::move_pallet,
+		traits::{GetStorageVersion, PalletInfoAccess},
+	};
+	#[cfg(feature = "try-runtime")]
+	use sp_io::hashing::twox_128;
+
+	pub struct MigrateToV11<T, P, N>(sp_std::marker::PhantomData<(T, P, N)>);
+	impl<T: Config, P: GetStorageVersion + PalletInfoAccess, N: Get<&'static str>> OnRuntimeUpgrade
+		for MigrateToV11<T, P, N>
+	{
+		#[cfg(feature = "try-runtime")]
+		fn pre_upgrade() -> Result<Vec<u8>, &'static str> {
+			frame_support::ensure!(
+				StorageVersion::<T>::get() == crate::Releases::V10_0_0,
+				"must upgrade linearly"
+			);
+			let old_pallet_prefix = twox_128(N::get().as_bytes());
+
+			frame_support::ensure!(
+				sp_io::storage::next_key(&old_pallet_prefix).is_some(),
+				"no data for the old pallet name has been detected"
+			);
+
+			Ok(Default::default())
+		}
+
+		/// Migrate the entire storage of this pallet to a new prefix.
+		///
+		/// This new prefix must be the same as the one set in construct_runtime. For safety, use
+		/// `PalletInfo` to get it, as:
+		/// `<Runtime as frame_system::Config>::PalletInfo::name::<VoterBagsList>`.
+		///
+		/// The migration will look into the storage version in order to avoid triggering a
+		/// migration on an up to date storage.
+		fn on_runtime_upgrade() -> Weight {
+			let old_pallet_name = N::get();
+			let new_pallet_name = <P as PalletInfoAccess>::name();
+
+			if StorageVersion::<T>::get() == Releases::V10_0_0 {
+				// bump version anyway, even if we don't need to move the prefix
+				StorageVersion::<T>::put(Releases::V11_0_0);
+				if new_pallet_name == old_pallet_name {
+					log!(
+						warn,
+						"new bags-list name is equal to the old one, only bumping the version"
+					);
+					return T::DbWeight::get().reads(1).saturating_add(T::DbWeight::get().writes(1))
+				}
+
+				move_pallet(old_pallet_name.as_bytes(), new_pallet_name.as_bytes());
+				<T as frame_system::Config>::BlockWeights::get().max_block
+			} else {
+				log!(warn, "v11::migrate should be removed.");
+				T::DbWeight::get().reads(1)
+			}
+		}
+
+		#[cfg(feature = "try-runtime")]
+		fn post_upgrade(_state: Vec<u8>) -> Result<(), &'static str> {
+			frame_support::ensure!(
+				StorageVersion::<T>::get() == crate::Releases::V11_0_0,
+				"wrong version after the upgrade"
+			);
+
+			let old_pallet_name = N::get();
+			let new_pallet_name = <P as PalletInfoAccess>::name();
+
+			// skip storage prefix checks for the same pallet names
+			if new_pallet_name == old_pallet_name {
+				return Ok(())
+			}
+
+			let old_pallet_prefix = twox_128(N::get().as_bytes());
+			frame_support::ensure!(
+				sp_io::storage::next_key(&old_pallet_prefix).is_none(),
+				"old pallet data hasn't been removed"
+			);
+
+			let new_pallet_name = <P as PalletInfoAccess>::name();
+			let new_pallet_prefix = twox_128(new_pallet_name.as_bytes());
+			frame_support::ensure!(
+				sp_io::storage::next_key(&new_pallet_prefix).is_some(),
+				"new pallet data hasn't been created"
+			);
+
+			Ok(())
+		}
+	}
+}
+
 pub mod v10 {
 	use super::*;
 	use frame_support::storage_alias;
@@ -57,10 +206,97 @@ pub mod v10 {
 			}
 		}
 	}
+
+	/// Special migration for xx network's custom Staking pallet
+	/// This combines V8, V9 and V10 migrations into one
+	pub struct MigrateFromV7dot5ToV10<T>(sp_std::marker::PhantomData<T>);
+	impl<T: Config> OnRuntimeUpgrade for MigrateFromV7dot5ToV10<T> {
+		fn on_runtime_upgrade() -> frame_support::weights::Weight {
+			if StorageVersion::<T>::get() == Releases::V7_5_0 {
+				log!(info, "migrating to Releases::V10_0_0");
+				// Start with VoterList migration
+				log!(info, "generating voter list");
+				// Regenerate bags with all Validators and Nominators
+				// This performs both the V8 and V9 migrations at once
+				let migrated = T::VoterList::unsafe_regenerate(
+					Validators::<T>::iter().map(|(id, _)| id).chain(Nominators::<T>::iter().map(|(id, _)| id)),
+					Pallet::<T>::weight_of_fn(),
+				);
+				debug_assert_eq!(T::VoterList::try_state(), Ok(()));
+				log!(
+					info,
+					"completed voter list generation with {} voters migrated",
+					migrated,
+				);
+
+				// Now do the V10 migration
+				log!(info, "applying any pending slashes");
+				let pending_slashes = <Pallet<T> as Store>::UnappliedSlashes::iter().take(512);
+				for (era, slashes) in pending_slashes {
+					for slash in slashes {
+						// in the old slashing scheme, the slash era was the key at which we read
+						// from `UnappliedSlashes`.
+						log!(warn, "prematurely applying a slash ({:?}) for era {:?}", slash, era);
+						slashing::apply_slash::<T>(slash, era);
+					}
+				}
+
+				EarliestUnappliedSlash::<T>::kill();
+				StorageVersion::<T>::put(Releases::V10_0_0);
+
+				log!(info, "MigrateFromV7dot5ToV10 executed successfully");
+				T::BlockWeights::get().max_block
+			} else {
+				log!(warn, "MigrateFromV7dot5ToV10 should be removed.");
+				T::DbWeight::get().reads(1)
+			}
+		}
+
+		#[cfg(feature = "try-runtime")]
+		fn pre_upgrade() -> Result<(), &'static str> {
+			use frame_support::traits::OnRuntimeUpgradeHelpersExt;
+			// Ensure storage version
+			frame_support::ensure!(
+				StorageVersion::<T>::get() == Releases::V7_5_0,
+				"must upgrade linearly"
+			);
+
+			// Get total number of Validators and Nominators
+			let prev_count = Nominators::<T>::count() + Validators::<T>::count();
+			Self::set_temp_storage(prev_count, "prev");
+			log!(info, "migration passes PRE checks ✅, expecting {} voters", prev_count);
+			Ok(())
+		}
+
+		#[cfg(feature = "try-runtime")]
+		fn post_upgrade() -> Result<(), &'static str> {
+			use frame_support::traits::OnRuntimeUpgradeHelpersExt;
+			// Check storage version is upgraded
+			frame_support::ensure!(
+				StorageVersion::<T>::get() == Releases::V10_0_0,
+				"Incorrect storage version after migration. Expected V10_0_0!"
+			);
+
+			// Ensure voter list is in a consistent state
+			T::VoterList::try_state().map_err(|_| "VoterList is not in a sane state.")?;
+
+			// Confirm all Validators and Nominators were correctly migrated
+			let post_count = T::VoterList::count();
+			let prev_count = Self::get_temp_storage::<u32>("prev").unwrap();
+			assert!(post_count == prev_count);
+
+			log!(info, "migration passes POST checks ✅");
+			Ok(())
+		}
+	}
 }
 
 pub mod v9 {
 	use super::*;
+	#[cfg(feature = "try-runtime")]
+	use frame_support::codec::{Decode, Encode};
+	#[cfg(feature = "try-runtime")]
+	use sp_std::vec::Vec;
 
 	/// Migration implementation that injects all validators into sorted list.
 	///
@@ -99,23 +335,22 @@ pub mod v9 {
 		}
 
 		#[cfg(feature = "try-runtime")]
-		fn pre_upgrade() -> Result<(), &'static str> {
-			use frame_support::traits::OnRuntimeUpgradeHelpersExt;
+		fn pre_upgrade() -> Result<Vec<u8>, &'static str> {
 			frame_support::ensure!(
 				StorageVersion::<T>::get() == crate::Releases::V8_0_0,
 				"must upgrade linearly"
 			);
 
 			let prev_count = T::VoterList::count();
-			Self::set_temp_storage(prev_count, "prev");
-			Ok(())
+			Ok(prev_count.encode())
 		}
 
 		#[cfg(feature = "try-runtime")]
-		fn post_upgrade() -> Result<(), &'static str> {
-			use frame_support::traits::OnRuntimeUpgradeHelpersExt;
+		fn post_upgrade(prev_count: Vec<u8>) -> Result<(), &'static str> {
+			let prev_count: u32 = Decode::decode(&mut prev_count.as_slice()).expect(
+				"the state parameter should be something that was generated by pre_upgrade",
+			);
 			let post_count = T::VoterList::count();
-			let prev_count = Self::get_temp_storage::<u32>("prev").unwrap();
 			let validators = Validators::<T>::count();
 			assert!(post_count == prev_count + validators);
 

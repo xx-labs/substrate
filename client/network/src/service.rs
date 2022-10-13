@@ -29,20 +29,15 @@
 
 use crate::{
 	behaviour::{self, Behaviour, BehaviourOut},
-	config::{Params, TransportConfig},
+	config::Params,
 	discovery::DiscoveryConfig,
-	error::Error,
 	network_state::{
 		NetworkState, NotConnectedPeer as NetworkStateNotConnectedPeer, Peer as NetworkStatePeer,
 	},
-	protocol::{
-		self, message::generic::Roles, NotificationsSink, NotifsHandlerError, PeerInfo, Protocol,
-		Ready,
-	},
-	transactions, transport, ExHashT, ReputationChange,
+	protocol::{self, NotificationsSink, NotifsHandlerError, PeerInfo, Protocol, Ready},
+	transport, ReputationChange,
 };
 
-use codec::Encode as _;
 use futures::{channel::oneshot, prelude::*};
 use libp2p::{
 	core::{either::EitherError, upgrade, ConnectedPoint, Executor},
@@ -60,8 +55,12 @@ use metrics::{Histogram, HistogramVec, MetricSources, Metrics};
 use parking_lot::Mutex;
 use sc_consensus::{BlockImportError, BlockImportStatus, ImportQueue, Link};
 use sc_network_common::{
-	config::MultiaddrWithPeerId,
-	protocol::event::{DhtEvent, Event},
+	config::{MultiaddrWithPeerId, TransportConfig},
+	error::Error,
+	protocol::{
+		event::{DhtEvent, Event},
+		ProtocolName,
+	},
 	request_responses::{IfDisconnected, RequestFailure},
 	service::{
 		NetworkDHTProvider, NetworkEventStream, NetworkNotification, NetworkPeers, NetworkSigner,
@@ -70,13 +69,13 @@ use sc_network_common::{
 		NotificationSenderReady as NotificationSenderReadyT, Signature, SigningError,
 	},
 	sync::{SyncState, SyncStatus},
+	ExHashT,
 };
 use sc_peerset::PeersetHandle;
 use sc_utils::mpsc::{tracing_unbounded, TracingUnboundedReceiver, TracingUnboundedSender};
 use sp_blockchain::HeaderBackend;
 use sp_runtime::traits::{Block as BlockT, NumberFor};
 use std::{
-	borrow::Cow,
 	cmp,
 	collections::{HashMap, HashSet},
 	fs, iter,
@@ -93,13 +92,15 @@ use std::{
 
 pub use behaviour::{InboundFailure, OutboundFailure, ResponseFailure};
 
+#[cfg(test)]
+mod chainsync_tests;
 mod metrics;
 mod out_events;
 #[cfg(test)]
 mod tests;
 
 pub use libp2p::identity::{error::DecodingError, Keypair, PublicKey};
-use sc_network_common::service::{NetworkBlock, NetworkRequest, NetworkTransaction};
+use sc_network_common::service::{NetworkBlock, NetworkRequest};
 
 /// Substrate network service. Handles network IO and manages connectivity.
 pub struct NetworkService<B: BlockT + 'static, H: ExHashT> {
@@ -119,10 +120,10 @@ pub struct NetworkService<B: BlockT + 'static, H: ExHashT> {
 	/// nodes it should be connected to or not.
 	peerset: PeersetHandle,
 	/// Channel that sends messages to the actual worker.
-	to_worker: TracingUnboundedSender<ServiceToWorkerMsg<B, H>>,
+	to_worker: TracingUnboundedSender<ServiceToWorkerMsg<B>>,
 	/// For each peer and protocol combination, an object that allows sending notifications to
 	/// that peer. Updated by the [`NetworkWorker`].
-	peers_notifications_sinks: Arc<Mutex<HashMap<(PeerId, Cow<'static, str>), NotificationsSink>>>,
+	peers_notifications_sinks: Arc<Mutex<HashMap<(PeerId, ProtocolName), NotificationsSink>>>,
 	/// Field extracted from the [`Metrics`] struct and necessary to report the
 	/// notifications-related metrics.
 	notifications_sizes_metric: Option<HistogramVec>,
@@ -135,18 +136,23 @@ impl<B, H, Client> NetworkWorker<B, H, Client>
 where
 	B: BlockT + 'static,
 	H: ExHashT,
-	Client: sp_blockchain::HeaderBackend<B> + 'static,
+	Client: HeaderBackend<B> + 'static,
 {
 	/// Creates the network service.
 	///
 	/// Returns a `NetworkWorker` that implements `Future` and must be regularly polled in order
 	/// for the network processing to advance. From it, you can extract a `NetworkService` using
 	/// `worker.service()`. The `NetworkService` can be shared through the codebase.
-	pub fn new(mut params: Params<B, H, Client>) -> Result<Self, Error> {
+	pub fn new(mut params: Params<B, Client>) -> Result<Self, Error> {
 		// Private and public keys configuration.
 		let local_identity = params.network_config.node_key.clone().into_keypair()?;
 		let local_public = local_identity.public();
 		let local_peer_id = local_public.to_peer_id();
+
+		params
+			.network_config
+			.request_response_protocols
+			.extend(params.request_response_protocol_configs);
 
 		params.network_config.boot_nodes = params
 			.network_config
@@ -208,43 +214,19 @@ where
 			fs::create_dir_all(path)?;
 		}
 
-		let transactions_handler_proto = transactions::TransactionsHandlerPrototype::new(
-			params.protocol_id.clone(),
-			params
-				.chain
-				.hash(0u32.into())
-				.ok()
-				.flatten()
-				.expect("Genesis block exists; qed"),
-			params.fork_id.clone(),
-		);
-		params
-			.network_config
-			.extra_sets
-			.insert(0, transactions_handler_proto.set_config());
-
 		info!(
 			target: "sub-libp2p",
 			"🏷  Local node identity is: {}",
 			local_peer_id.to_base58(),
 		);
 
-		let default_notif_handshake_message = Roles::from(&params.role).encode();
-
 		let (protocol, peerset_handle, mut known_addresses) = Protocol::new(
 			From::from(&params.role),
 			params.chain.clone(),
-			params.protocol_id.clone(),
-			&params.fork_id,
 			&params.network_config,
-			iter::once(Vec::new())
-				.chain(
-					(0..params.network_config.extra_sets.len() - 1)
-						.map(|_| default_notif_handshake_message.clone()),
-				)
-				.collect(),
 			params.metrics_registry.as_ref(),
 			params.chain_sync,
+			params.block_announce_config,
 		)?;
 
 		// List of multiaddresses that we know in the network.
@@ -374,7 +356,6 @@ where
 					params.block_request_protocol_config,
 					params.state_request_protocol_config,
 					params.warp_sync_protocol_config,
-					params.bitswap,
 					params.light_client_request_protocol_config,
 					params.network_config.request_response_protocols,
 					peerset_handle.clone(),
@@ -459,13 +440,6 @@ where
 			_marker: PhantomData,
 		});
 
-		let (tx_handler, tx_handler_controller) = transactions_handler_proto.build(
-			service.clone(),
-			params.transaction_pool,
-			params.metrics_registry.as_ref(),
-		)?;
-		(params.transactions_handler_executor)(tx_handler.run().boxed());
-
 		Ok(NetworkWorker {
 			external_addresses,
 			num_connected,
@@ -476,9 +450,9 @@ where
 			from_service,
 			event_streams: out_events::OutChannels::new(params.metrics_registry.as_ref())?,
 			peers_notifications_sinks,
-			tx_handler_controller,
 			metrics,
 			boot_node_ids,
+			_marker: Default::default(),
 		})
 	}
 
@@ -890,7 +864,7 @@ where
 		self.peerset.report_peer(who, cost_benefit);
 	}
 
-	fn disconnect_peer(&self, who: PeerId, protocol: Cow<'static, str>) {
+	fn disconnect_peer(&self, who: PeerId, protocol: ProtocolName) {
 		let _ = self.to_worker.unbounded_send(ServiceToWorkerMsg::DisconnectPeer(who, protocol));
 	}
 
@@ -921,7 +895,7 @@ where
 
 	fn set_reserved_peers(
 		&self,
-		protocol: Cow<'static, str>,
+		protocol: ProtocolName,
 		peers: HashSet<Multiaddr>,
 	) -> Result<(), String> {
 		let peers_addrs = self.split_multiaddr_and_peer_id(peers)?;
@@ -952,7 +926,7 @@ where
 
 	fn add_peers_to_reserved_set(
 		&self,
-		protocol: Cow<'static, str>,
+		protocol: ProtocolName,
 		peers: HashSet<Multiaddr>,
 	) -> Result<(), String> {
 		let peers = self.split_multiaddr_and_peer_id(peers)?;
@@ -976,7 +950,7 @@ where
 		Ok(())
 	}
 
-	fn remove_peers_from_reserved_set(&self, protocol: Cow<'static, str>, peers: Vec<PeerId>) {
+	fn remove_peers_from_reserved_set(&self, protocol: ProtocolName, peers: Vec<PeerId>) {
 		for peer_id in peers.into_iter() {
 			let _ = self
 				.to_worker
@@ -986,7 +960,7 @@ where
 
 	fn add_to_peers_set(
 		&self,
-		protocol: Cow<'static, str>,
+		protocol: ProtocolName,
 		peers: HashSet<Multiaddr>,
 	) -> Result<(), String> {
 		let peers = self.split_multiaddr_and_peer_id(peers)?;
@@ -1010,7 +984,7 @@ where
 		Ok(())
 	}
 
-	fn remove_from_peers_set(&self, protocol: Cow<'static, str>, peers: Vec<PeerId>) {
+	fn remove_from_peers_set(&self, protocol: ProtocolName, peers: Vec<PeerId>) {
 		for peer_id in peers.into_iter() {
 			let _ = self
 				.to_worker
@@ -1040,7 +1014,7 @@ where
 	B: BlockT + 'static,
 	H: ExHashT,
 {
-	fn write_notification(&self, target: PeerId, protocol: Cow<'static, str>, message: Vec<u8>) {
+	fn write_notification(&self, target: PeerId, protocol: ProtocolName, message: Vec<u8>) {
 		// We clone the `NotificationsSink` in order to be able to unlock the network-wide
 		// `peers_notifications_sinks` mutex as soon as possible.
 		let sink = {
@@ -1077,7 +1051,7 @@ where
 	fn notification_sender(
 		&self,
 		target: PeerId,
-		protocol: Cow<'static, str>,
+		protocol: ProtocolName,
 	) -> Result<Box<dyn NotificationSenderT>, NotificationSenderError> {
 		// We clone the `NotificationsSink` in order to be able to unlock the network-wide
 		// `peers_notifications_sinks` mutex as soon as possible.
@@ -1108,7 +1082,7 @@ where
 	async fn request(
 		&self,
 		target: PeerId,
-		protocol: Cow<'static, str>,
+		protocol: ProtocolName,
 		request: Vec<u8>,
 		connect: IfDisconnected,
 	) -> Result<Vec<u8>, RequestFailure> {
@@ -1128,7 +1102,7 @@ where
 	fn start_request(
 		&self,
 		target: PeerId,
-		protocol: Cow<'static, str>,
+		protocol: ProtocolName,
 		request: Vec<u8>,
 		tx: oneshot::Sender<Result<Vec<u8>, RequestFailure>>,
 		connect: IfDisconnected,
@@ -1140,20 +1114,6 @@ where
 			pending_response: tx,
 			connect,
 		});
-	}
-}
-
-impl<B, H> NetworkTransaction<H> for NetworkService<B, H>
-where
-	B: BlockT + 'static,
-	H: ExHashT,
-{
-	fn trigger_repropagate(&self) {
-		let _ = self.to_worker.unbounded_send(ServiceToWorkerMsg::PropagateTransactions);
-	}
-
-	fn propagate_transaction(&self, hash: H) {
-		let _ = self.to_worker.unbounded_send(ServiceToWorkerMsg::PropagateTransaction(hash));
 	}
 }
 
@@ -1179,7 +1139,7 @@ pub struct NotificationSender {
 	sink: NotificationsSink,
 
 	/// Name of the protocol on the wire.
-	protocol_name: Cow<'static, str>,
+	protocol_name: ProtocolName,
 
 	/// Field extracted from the [`Metrics`] struct and necessary to report the
 	/// notifications-related metrics.
@@ -1212,7 +1172,7 @@ pub struct NotificationSenderReady<'a> {
 	peer_id: &'a PeerId,
 
 	/// Name of the protocol on the wire.
-	protocol_name: &'a Cow<'static, str>,
+	protocol_name: &'a ProtocolName,
 
 	/// Field extracted from the [`Metrics`] struct and necessary to report the
 	/// notifications-related metrics.
@@ -1243,9 +1203,7 @@ impl<'a> NotificationSenderReadyT for NotificationSenderReady<'a> {
 /// Messages sent from the `NetworkService` to the `NetworkWorker`.
 ///
 /// Each entry corresponds to a method of `NetworkService`.
-enum ServiceToWorkerMsg<B: BlockT, H: ExHashT> {
-	PropagateTransaction(H),
-	PropagateTransactions,
+enum ServiceToWorkerMsg<B: BlockT> {
 	RequestJustification(B::Hash, NumberFor<B>),
 	ClearJustificationRequests,
 	AnnounceBlock(B::Hash, Option<Vec<u8>>),
@@ -1256,16 +1214,16 @@ enum ServiceToWorkerMsg<B: BlockT, H: ExHashT> {
 	AddReserved(PeerId),
 	RemoveReserved(PeerId),
 	SetReserved(HashSet<PeerId>),
-	SetPeersetReserved(Cow<'static, str>, HashSet<PeerId>),
-	AddSetReserved(Cow<'static, str>, PeerId),
-	RemoveSetReserved(Cow<'static, str>, PeerId),
-	AddToPeersSet(Cow<'static, str>, PeerId),
-	RemoveFromPeersSet(Cow<'static, str>, PeerId),
+	SetPeersetReserved(ProtocolName, HashSet<PeerId>),
+	AddSetReserved(ProtocolName, PeerId),
+	RemoveSetReserved(ProtocolName, PeerId),
+	AddToPeersSet(ProtocolName, PeerId),
+	RemoveFromPeersSet(ProtocolName, PeerId),
 	SyncFork(Vec<PeerId>, B::Hash, NumberFor<B>),
 	EventStream(out_events::Sender),
 	Request {
 		target: PeerId,
-		protocol: Cow<'static, str>,
+		protocol: ProtocolName,
 		request: Vec<u8>,
 		pending_response: oneshot::Sender<Result<Vec<u8>, RequestFailure>>,
 		connect: IfDisconnected,
@@ -1276,7 +1234,7 @@ enum ServiceToWorkerMsg<B: BlockT, H: ExHashT> {
 	NetworkState {
 		pending_response: oneshot::Sender<Result<NetworkState, RequestFailure>>,
 	},
-	DisconnectPeer(PeerId, Cow<'static, str>),
+	DisconnectPeer(PeerId, ProtocolName),
 	NewBestBlockImported(B::Hash, NumberFor<B>),
 }
 
@@ -1303,7 +1261,7 @@ where
 	/// The import queue that was passed at initialization.
 	import_queue: Box<dyn ImportQueue<B>>,
 	/// Messages from the [`NetworkService`] that must be processed.
-	from_service: TracingUnboundedReceiver<ServiceToWorkerMsg<B, H>>,
+	from_service: TracingUnboundedReceiver<ServiceToWorkerMsg<B>>,
 	/// Senders for events that happen on the network.
 	event_streams: out_events::OutChannels,
 	/// Prometheus network metrics.
@@ -1312,9 +1270,10 @@ where
 	boot_node_ids: Arc<HashSet<PeerId>>,
 	/// For each peer and protocol combination, an object that allows sending notifications to
 	/// that peer. Shared with the [`NetworkService`].
-	peers_notifications_sinks: Arc<Mutex<HashMap<(PeerId, Cow<'static, str>), NotificationsSink>>>,
-	/// Controller for the handler of incoming and outgoing transactions.
-	tx_handler_controller: transactions::TransactionsHandlerController<H>,
+	peers_notifications_sinks: Arc<Mutex<HashMap<(PeerId, ProtocolName), NotificationsSink>>>,
+	/// Marker to pin the `H` generic. Serves no purpose except to not break backwards
+	/// compatibility.
+	_marker: PhantomData<H>,
 }
 
 impl<B, H, Client> Future for NetworkWorker<B, H, Client>
@@ -1370,10 +1329,6 @@ where
 					.behaviour_mut()
 					.user_protocol_mut()
 					.clear_justification_requests(),
-				ServiceToWorkerMsg::PropagateTransaction(hash) =>
-					this.tx_handler_controller.propagate_transaction(hash),
-				ServiceToWorkerMsg::PropagateTransactions =>
-					this.tx_handler_controller.propagate_transactions(),
 				ServiceToWorkerMsg::GetValue(key) =>
 					this.network_service.behaviour_mut().get_value(key),
 				ServiceToWorkerMsg::PutValue(key, value) =>
@@ -1456,7 +1411,7 @@ where
 					.network_service
 					.behaviour_mut()
 					.user_protocol_mut()
-					.disconnect_peer(&who, &protocol_name),
+					.disconnect_peer(&who, protocol_name),
 				ServiceToWorkerMsg::NewBestBlockImported(hash, number) => this
 					.network_service
 					.behaviour_mut()
@@ -1741,14 +1696,10 @@ where
 						let reason = match cause {
 							Some(ConnectionError::IO(_)) => "transport-error",
 							Some(ConnectionError::Handler(EitherError::A(EitherError::A(
-								EitherError::A(EitherError::B(EitherError::A(
-									PingFailure::Timeout,
-								))),
+								EitherError::B(EitherError::A(PingFailure::Timeout)),
 							)))) => "ping-timeout",
 							Some(ConnectionError::Handler(EitherError::A(EitherError::A(
-								EitherError::A(EitherError::A(
-									NotifsHandlerError::SyncNotificationsClogged,
-								)),
+								EitherError::A(NotifsHandlerError::SyncNotificationsClogged),
 							)))) => "sync-notifications-clogged",
 							Some(ConnectionError::Handler(_)) => "protocol-error",
 							Some(ConnectionError::KeepAliveTimeout) => "keep-alive-timeout",
@@ -1919,8 +1870,6 @@ where
 				SyncState::Idle => false,
 				SyncState::Downloading => true,
 			};
-
-		this.tx_handler_controller.set_gossip_enabled(!is_major_syncing);
 
 		this.is_major_syncing.store(is_major_syncing, Ordering::Relaxed);
 

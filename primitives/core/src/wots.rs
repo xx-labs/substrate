@@ -239,7 +239,7 @@ impl Serialize for Signature {
     where
         S: Serializer,
     {
-        serializer.serialize_str(&hex::encode(self))
+        serializer.serialize_str(&array_bytes::bytes2hex("", self.as_ref()))
     }
 }
 
@@ -249,7 +249,7 @@ impl<'de> Deserialize<'de> for Signature {
     where
         D: Deserializer<'de>,
     {
-        let signature_hex = hex::decode(&String::deserialize(deserializer)?)
+        let signature_hex = array_bytes::hex2bytes(&String::deserialize(deserializer)?)
             .map_err(|e| de::Error::custom(format!("{:?}", e)))?;
         Signature::try_from(signature_hex.as_ref())
             .map_err(|e| de::Error::custom(format!("{:?}", e)))

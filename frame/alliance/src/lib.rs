@@ -84,7 +84,8 @@
 //!
 //! #### Root Calls
 //!
-//! - `force_set_members` - Set the members via chain governance.
+//! - `init_members` - Initialize the Alliance, onboard founders, fellows, and allies.
+//! - `disband` - Disband the Alliance, remove all active members and unreserve deposits.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
@@ -119,7 +120,7 @@ use frame_support::{
 		ChangeMembers, Currency, Get, InitializeMembers, IsSubType, OnUnbalanced,
 		ReservableCurrency,
 	},
-	weights::Weight,
+	weights::{OldWeight, Weight},
 };
 use pallet_identity::IdentityField;
 
@@ -204,14 +205,6 @@ pub trait ProposalProvider<AccountId, Hash, Proposal> {
 
 	/// Return a proposal of the given hash.
 	fn proposal_of(proposal_hash: Hash) -> Option<Proposal>;
-
-	/// Return hashes of all active proposals.
-	fn proposals() -> Vec<Hash>;
-
-	// Return count of all active proposals.
-	//
-	// Used to check witness data for an extrinsic.
-	fn proposals_count() -> u32;
 }
 
 /// The various roles that a member can hold.
@@ -247,25 +240,26 @@ pub mod pallet {
 	#[pallet::config]
 	pub trait Config<I: 'static = ()>: frame_system::Config {
 		/// The overarching event type.
-		type Event: From<Event<Self, I>> + IsType<<Self as frame_system::Config>::Event>;
+		type RuntimeEvent: From<Event<Self, I>>
+			+ IsType<<Self as frame_system::Config>::RuntimeEvent>;
 
-		/// The outer call dispatch type.
+		/// The runtime call dispatch type.
 		type Proposal: Parameter
-			+ Dispatchable<Origin = Self::Origin, PostInfo = PostDispatchInfo>
+			+ Dispatchable<RuntimeOrigin = Self::RuntimeOrigin, PostInfo = PostDispatchInfo>
 			+ From<frame_system::Call<Self>>
 			+ From<Call<Self, I>>
 			+ GetDispatchInfo
 			+ IsSubType<Call<Self, I>>
-			+ IsType<<Self as frame_system::Config>::Call>;
+			+ IsType<<Self as frame_system::Config>::RuntimeCall>;
 
 		/// Origin for admin-level operations, like setting the Alliance's rules.
-		type AdminOrigin: EnsureOrigin<Self::Origin>;
+		type AdminOrigin: EnsureOrigin<Self::RuntimeOrigin>;
 
 		/// Origin that manages entry and forcible discharge from the Alliance.
-		type MembershipManager: EnsureOrigin<Self::Origin>;
+		type MembershipManager: EnsureOrigin<Self::RuntimeOrigin>;
 
 		/// Origin for making announcements and adding/removing unscrupulous items.
-		type AnnouncementOrigin: EnsureOrigin<Self::Origin>;
+		type AnnouncementOrigin: EnsureOrigin<Self::RuntimeOrigin>;
 
 		/// The currency used for deposits.
 		type Currency: ReservableCurrency<Self::AccountId>;
@@ -428,8 +422,8 @@ pub mod pallet {
 		UnscrupulousItemAdded { items: Vec<UnscrupulousItemOf<T, I>> },
 		/// Accounts or websites have been removed from the list of unscrupulous items.
 		UnscrupulousItemRemoved { items: Vec<UnscrupulousItemOf<T, I>> },
-		/// Alliance disbanded.
-		AllianceDisbanded { members: Vec<T::AccountId>, proposals: Vec<T::Hash> },
+		/// Alliance disbanded. Includes number deleted members and unreserved deposits.
+		AllianceDisbanded { voting_members: u32, ally_members: u32, unreserved: u32 },
 	}
 
 	#[pallet::genesis_config]
@@ -626,102 +620,43 @@ pub mod pallet {
 				.max(T::WeightInfo::close_early_disapproved(x, y, p2))
 				.max(T::WeightInfo::close_approved(b, x, y, p2))
 				.max(T::WeightInfo::close_disapproved(x, y, p2))
-				.saturating_add(p1)
+				.saturating_add(p1.into())
 		})]
-		pub fn close(
+		#[allow(deprecated)]
+		#[deprecated(note = "1D weight is used in this extrinsic, please migrate to use `close`")]
+		pub fn close_old_weight(
 			origin: OriginFor<T>,
 			proposal_hash: T::Hash,
 			#[pallet::compact] index: ProposalIndex,
-			#[pallet::compact] proposal_weight_bound: Weight,
+			#[pallet::compact] proposal_weight_bound: OldWeight,
 			#[pallet::compact] length_bound: u32,
 		) -> DispatchResultWithPostInfo {
+			let proposal_weight_bound: Weight = proposal_weight_bound.into();
 			let who = ensure_signed(origin)?;
 			ensure!(Self::has_voting_rights(&who), Error::<T, I>::NoVotingRights);
 
-			let info = T::ProposalProvider::close_proposal(
-				proposal_hash,
-				index,
-				proposal_weight_bound,
-				length_bound,
-			)?;
-			Ok(info.into())
+			Self::do_close(proposal_hash, index, proposal_weight_bound, length_bound)
 		}
 
-		/// Initialize the founders, fellows, and allies.
-		/// Founders must be provided to initialize the Alliance.
+		/// Initialize the Alliance, onboard founders, fellows, and allies.
 		///
-		/// Provide witness data to disband current Alliance before initializing new.
-		/// Alliance must be empty or disband first to initialize new.
-		///
-		/// Alliance is only disbanded if new member set is not provided.
-		///
+		/// Founders must be not empty.
+		/// The Alliance must be empty.
 		/// Must be called by the Root origin.
-		#[pallet::weight(T::WeightInfo::force_set_members(
-			T::MaxFounders::get(),
-			T::MaxFellows::get(),
-			T::MaxAllies::get(),
-			witness.proposals,
-			witness.voting_members,
-			witness.ally_members,
+		#[pallet::weight(T::WeightInfo::init_members(
+			founders.len() as u32,
+			fellows.len() as u32,
+			allies.len() as u32,
 		))]
-		pub fn force_set_members(
+		pub fn init_members(
 			origin: OriginFor<T>,
 			founders: Vec<T::AccountId>,
 			fellows: Vec<T::AccountId>,
 			allies: Vec<T::AccountId>,
-			witness: ForceSetWitness,
 		) -> DispatchResult {
 			ensure_root(origin)?;
 
-			if !witness.is_zero() {
-				// Disband Alliance by removing all members and returning deposits.
-				// Veto and remove all active proposals to avoid any unexpected behavior from
-				// actionable items managed outside of the pallet. Items managed within the pallet,
-				// like `UnscrupulousWebsites`, are left for the new Alliance to clean up or keep.
-
-				ensure!(
-					T::ProposalProvider::proposals_count() <= witness.proposals,
-					Error::<T, I>::BadWitness
-				);
-				ensure!(
-					Self::votable_members_count() <= witness.voting_members,
-					Error::<T, I>::BadWitness
-				);
-				ensure!(
-					Self::ally_members_count() <= witness.ally_members,
-					Error::<T, I>::BadWitness
-				);
-
-				let mut proposals = T::ProposalProvider::proposals();
-				for hash in proposals.iter() {
-					T::ProposalProvider::veto_proposal(*hash);
-				}
-
-				let mut members = Self::votable_members();
-				T::MembershipChanged::change_members_sorted(&[], &members, &[]);
-
-				members.append(&mut Self::members_of(MemberRole::Ally));
-				for member in members.iter() {
-					if let Some(deposit) = DepositOf::<T, I>::take(&member) {
-						let err_amount = T::Currency::unreserve(&member, deposit);
-						debug_assert!(err_amount.is_zero());
-					}
-				}
-
-				Members::<T, I>::remove(&MemberRole::Founder);
-				Members::<T, I>::remove(&MemberRole::Fellow);
-				Members::<T, I>::remove(&MemberRole::Ally);
-
-				members.sort();
-				proposals.sort();
-				Self::deposit_event(Event::AllianceDisbanded { members, proposals });
-			}
-
-			if founders.is_empty() {
-				ensure!(fellows.is_empty() && allies.is_empty(), Error::<T, I>::FoundersMissing);
-				// new members set not provided.
-				return Ok(())
-			}
+			ensure!(!founders.is_empty(), Error::<T, I>::FoundersMissing);
 			ensure!(!Self::is_initialized(), Error::<T, I>::AllianceAlreadyInitialized);
 
 			let mut founders: BoundedVec<T::AccountId, T::MaxMembersCount> =
@@ -763,6 +698,59 @@ pub mod pallet {
 				allies: allies.into(),
 			});
 			Ok(())
+		}
+
+		/// Disband the Alliance, remove all active members and unreserve deposits.
+		///
+		/// Witness data must be set.
+		#[pallet::weight(T::WeightInfo::disband(
+			witness.voting_members,
+			witness.ally_members,
+			witness.voting_members.saturating_add(witness.ally_members),
+		))]
+		pub fn disband(
+			origin: OriginFor<T>,
+			witness: DisbandWitness,
+		) -> DispatchResultWithPostInfo {
+			ensure_root(origin)?;
+
+			ensure!(!witness.is_zero(), Error::<T, I>::BadWitness);
+			ensure!(
+				Self::voting_members_count() <= witness.voting_members,
+				Error::<T, I>::BadWitness
+			);
+			ensure!(Self::ally_members_count() <= witness.ally_members, Error::<T, I>::BadWitness);
+			ensure!(Self::is_initialized(), Error::<T, I>::AllianceNotYetInitialized);
+
+			let voting_members = Self::voting_members();
+			T::MembershipChanged::change_members_sorted(&[], &voting_members, &[]);
+
+			let ally_members = Self::members_of(MemberRole::Ally);
+			let mut unreserve_count: u32 = 0;
+			for member in voting_members.iter().chain(ally_members.iter()) {
+				if let Some(deposit) = DepositOf::<T, I>::take(&member) {
+					let err_amount = T::Currency::unreserve(&member, deposit);
+					debug_assert!(err_amount.is_zero());
+					unreserve_count += 1;
+				}
+			}
+
+			Members::<T, I>::remove(&MemberRole::Founder);
+			Members::<T, I>::remove(&MemberRole::Fellow);
+			Members::<T, I>::remove(&MemberRole::Ally);
+
+			Self::deposit_event(Event::AllianceDisbanded {
+				voting_members: voting_members.len() as u32,
+				ally_members: ally_members.len() as u32,
+				unreserved: unreserve_count,
+			});
+
+			Ok(Some(T::WeightInfo::disband(
+				voting_members.len() as u32,
+				ally_members.len() as u32,
+				unreserve_count,
+			))
+			.into())
 		}
 
 		/// Set a new IPFS CID to the alliance rule.
@@ -994,6 +982,34 @@ pub mod pallet {
 			Self::deposit_event(Event::UnscrupulousItemRemoved { items });
 			Ok(())
 		}
+
+		/// Close a vote that is either approved, disapproved, or whose voting period has ended.
+		///
+		/// Requires the sender to be a founder or fellow.
+		#[pallet::weight({
+			let b = *length_bound;
+			let x = T::MaxFounders::get();
+			let y = T::MaxFellows::get();
+			let p1 = *proposal_weight_bound;
+			let p2 = T::MaxProposals::get();
+			T::WeightInfo::close_early_approved(b, x, y, p2)
+				.max(T::WeightInfo::close_early_disapproved(x, y, p2))
+				.max(T::WeightInfo::close_approved(b, x, y, p2))
+				.max(T::WeightInfo::close_disapproved(x, y, p2))
+				.saturating_add(p1)
+		})]
+		pub fn close(
+			origin: OriginFor<T>,
+			proposal_hash: T::Hash,
+			#[pallet::compact] index: ProposalIndex,
+			proposal_weight_bound: Weight,
+			#[pallet::compact] length_bound: u32,
+		) -> DispatchResultWithPostInfo {
+			let who = ensure_signed(origin)?;
+			ensure!(Self::has_voting_rights(&who), Error::<T, I>::NoVotingRights);
+
+			Self::do_close(proposal_hash, index, proposal_weight_bound, length_bound)
+		}
 	}
 }
 
@@ -1052,7 +1068,7 @@ impl<T: Config<I>, I: 'static> Pallet<T, I> {
 	}
 
 	/// Count of all members who have voting rights.
-	fn votable_members_count() -> u32 {
+	fn voting_members_count() -> u32 {
 		Members::<T, I>::decode_len(MemberRole::Founder)
 			.unwrap_or(0)
 			.saturating_add(Members::<T, I>::decode_len(MemberRole::Fellow).unwrap_or(0)) as u32
@@ -1064,7 +1080,7 @@ impl<T: Config<I>, I: 'static> Pallet<T, I> {
 	}
 
 	/// Collect all members who have voting rights into one list.
-	fn votable_members() -> Vec<T::AccountId> {
+	fn voting_members() -> Vec<T::AccountId> {
 		let mut founders = Self::members_of(MemberRole::Founder);
 		let mut fellows = Self::members_of(MemberRole::Fellow);
 		founders.append(&mut fellows);
@@ -1072,8 +1088,8 @@ impl<T: Config<I>, I: 'static> Pallet<T, I> {
 	}
 
 	/// Collect all members who have voting rights into one sorted list.
-	fn votable_members_sorted() -> Vec<T::AccountId> {
-		let mut members = Self::votable_members();
+	fn voting_members_sorted() -> Vec<T::AccountId> {
+		let mut members = Self::voting_members();
 		members.sort();
 		members
 	}
@@ -1089,7 +1105,7 @@ impl<T: Config<I>, I: 'static> Pallet<T, I> {
 		})?;
 
 		if role == MemberRole::Founder || role == MemberRole::Fellow {
-			let members = Self::votable_members_sorted();
+			let members = Self::voting_members_sorted();
 			T::MembershipChanged::change_members_sorted(&[who.clone()], &[], &members[..]);
 		}
 		Ok(())
@@ -1104,7 +1120,7 @@ impl<T: Config<I>, I: 'static> Pallet<T, I> {
 		})?;
 
 		if matches!(role, MemberRole::Founder | MemberRole::Fellow) {
-			let members = Self::votable_members_sorted();
+			let members = Self::voting_members_sorted();
 			T::MembershipChanged::change_members_sorted(&[], &[who.clone()], &members[..]);
 		}
 		Ok(())
@@ -1205,5 +1221,20 @@ impl<T: Config<I>, I: 'static> Pallet<T, I> {
 			}
 		}
 		res
+	}
+
+	fn do_close(
+		proposal_hash: T::Hash,
+		index: ProposalIndex,
+		proposal_weight_bound: Weight,
+		length_bound: u32,
+	) -> DispatchResultWithPostInfo {
+		let info = T::ProposalProvider::close_proposal(
+			proposal_hash,
+			index,
+			proposal_weight_bound,
+			length_bound,
+		)?;
+		Ok(info.into())
 	}
 }
