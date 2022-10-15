@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2019-2021 Parity Technologies (UK) Ltd.
+// Copyright (C) 2019-2022 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -46,7 +46,7 @@ pub fn migrate<T: frame_system::Config, P: GetStorageVersion + PalletInfoAccess,
 			target: "runtime::membership",
 			"New pallet name is equal to the old prefix. No migration needs to be done.",
 		);
-		return 0
+		return Weight::zero()
 	}
 
 	let on_chain_storage_version = <P as GetStorageVersion>::on_chain_storage_version();
@@ -71,7 +71,7 @@ pub fn migrate<T: frame_system::Config, P: GetStorageVersion + PalletInfoAccess,
 			"Attempted to apply migration to v4 but failed because storage version is {:?}",
 			on_chain_storage_version,
 		);
-		0
+		Weight::zero()
 	}
 }
 

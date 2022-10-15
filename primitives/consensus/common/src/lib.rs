@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2018-2021 Parity Technologies (UK) Ltd.
+// Copyright (C) 2018-2022 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -25,7 +25,6 @@ use std::{sync::Arc, time::Duration};
 
 use futures::prelude::*;
 use sp_runtime::{
-	generic::BlockId,
 	traits::{Block as BlockT, HashFor},
 	Digest,
 };
@@ -33,7 +32,6 @@ use sp_state_machine::StorageProof;
 
 pub mod block_validation;
 pub mod error;
-pub mod evaluation;
 mod select_chain;
 
 pub use self::error::Error;
@@ -98,7 +96,7 @@ pub trait Environment<B: BlockT> {
 		+ Unpin
 		+ 'static;
 	/// Error which can occur upon creation.
-	type Error: From<Error> + std::fmt::Debug + 'static;
+	type Error: From<Error> + std::error::Error + 'static;
 
 	/// Initialize the proposal logic on top of a specific header. Provide
 	/// the authorities at that header.
@@ -169,7 +167,7 @@ impl ProofRecording for EnableProofRecording {
 	const ENABLED: bool = true;
 
 	fn into_proof(proof: Option<StorageProof>) -> Result<Self::Proof, NoProofRecorded> {
-		proof.ok_or_else(|| NoProofRecorded)
+		proof.ok_or(NoProofRecorded)
 	}
 }
 
@@ -191,7 +189,7 @@ mod private {
 /// Proposers are generic over bits of "consensus data" which are engine-specific.
 pub trait Proposer<B: BlockT> {
 	/// Error type which can occur when proposing or evaluating.
-	type Error: From<Error> + std::fmt::Debug + 'static;
+	type Error: From<Error> + std::error::Error + 'static;
 	/// The transaction type used by the backend.
 	type Transaction: Default + Send + 'static;
 	/// Future that resolves to a committed proposal with an optional proof.
@@ -237,10 +235,10 @@ pub trait Proposer<B: BlockT> {
 pub trait SyncOracle {
 	/// Whether the synchronization service is undergoing major sync.
 	/// Returns true if so.
-	fn is_major_syncing(&mut self) -> bool;
+	fn is_major_syncing(&self) -> bool;
 	/// Whether the synchronization service is offline.
 	/// Returns true if so.
-	fn is_offline(&mut self) -> bool;
+	fn is_offline(&self) -> bool;
 }
 
 /// A synchronization oracle for when there is no network.
@@ -248,10 +246,10 @@ pub trait SyncOracle {
 pub struct NoNetwork;
 
 impl SyncOracle for NoNetwork {
-	fn is_major_syncing(&mut self) -> bool {
+	fn is_major_syncing(&self) -> bool {
 		false
 	}
-	fn is_offline(&mut self) -> bool {
+	fn is_offline(&self) -> bool {
 		false
 	}
 }
@@ -259,80 +257,13 @@ impl SyncOracle for NoNetwork {
 impl<T> SyncOracle for Arc<T>
 where
 	T: ?Sized,
-	for<'r> &'r T: SyncOracle,
+	T: SyncOracle,
 {
-	fn is_major_syncing(&mut self) -> bool {
-		<&T>::is_major_syncing(&mut &**self)
+	fn is_major_syncing(&self) -> bool {
+		T::is_major_syncing(self)
 	}
 
-	fn is_offline(&mut self) -> bool {
-		<&T>::is_offline(&mut &**self)
+	fn is_offline(&self) -> bool {
+		T::is_offline(self)
 	}
-}
-
-/// Checks if the current active native block authoring implementation can author with the runtime
-/// at the given block.
-pub trait CanAuthorWith<Block: BlockT> {
-	/// See trait docs for more information.
-	///
-	/// # Return
-	///
-	/// - Returns `Ok(())` when authoring is supported.
-	/// - Returns `Err(_)` when authoring is not supported.
-	fn can_author_with(&self, at: &BlockId<Block>) -> Result<(), String>;
-}
-
-/// Checks if the node can author blocks by using
-/// [`NativeVersion::can_author_with`](sp_version::NativeVersion::can_author_with).
-#[derive(Clone)]
-pub struct CanAuthorWithNativeVersion<T>(T);
-
-impl<T> CanAuthorWithNativeVersion<T> {
-	/// Creates a new instance of `Self`.
-	pub fn new(inner: T) -> Self {
-		Self(inner)
-	}
-}
-
-impl<T: sp_version::GetRuntimeVersionAt<Block> + sp_version::GetNativeVersion, Block: BlockT>
-	CanAuthorWith<Block> for CanAuthorWithNativeVersion<T>
-{
-	fn can_author_with(&self, at: &BlockId<Block>) -> Result<(), String> {
-		match self.0.runtime_version(at) {
-			Ok(version) => self.0.native_version().can_author_with(&version),
-			Err(e) => Err(format!(
-				"Failed to get runtime version at `{}` and will disable authoring. Error: {}",
-				at, e,
-			)),
-		}
-	}
-}
-
-/// Returns always `true` for `can_author_with`. This is useful for tests.
-#[derive(Clone)]
-pub struct AlwaysCanAuthor;
-
-impl<Block: BlockT> CanAuthorWith<Block> for AlwaysCanAuthor {
-	fn can_author_with(&self, _: &BlockId<Block>) -> Result<(), String> {
-		Ok(())
-	}
-}
-
-/// Never can author.
-#[derive(Clone)]
-pub struct NeverCanAuthor;
-
-impl<Block: BlockT> CanAuthorWith<Block> for NeverCanAuthor {
-	fn can_author_with(&self, _: &BlockId<Block>) -> Result<(), String> {
-		Err("Authoring is always disabled.".to_string())
-	}
-}
-
-/// A type from which a slot duration can be obtained.
-pub trait SlotData {
-	/// Gets the slot duration.
-	fn slot_duration(&self) -> sp_std::time::Duration;
-
-	/// The static slot key
-	const SLOT_KEY: &'static [u8];
 }

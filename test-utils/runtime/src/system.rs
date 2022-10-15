@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2017-2021 Parity Technologies (UK) Ltd.
+// Copyright (C) 2017-2022 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -19,11 +19,11 @@
 //! and depositing logs.
 
 use crate::{
-	AccountId, AuthorityId, Block, BlockNumber, Digest, Extrinsic, Header, Transfer, H256 as Hash,
+	AccountId, AuthorityId, Block, BlockNumber, Digest, Extrinsic, Header, Runtime, Transfer,
+	H256 as Hash,
 };
 use codec::{Decode, Encode, KeyedVec};
-use frame_support::{decl_module, decl_storage, storage};
-use frame_system::Config;
+use frame_support::storage;
 use sp_core::storage::well_known_keys;
 use sp_io::{hashing::blake2_256, storage::root as storage_root, trie};
 use sp_runtime::{
@@ -39,19 +39,51 @@ use sp_std::prelude::*;
 const NONCE_OF: &[u8] = b"nonce:";
 const BALANCE_OF: &[u8] = b"balance:";
 
-decl_module! {
-	pub struct Module<T: Config> for enum Call where origin: T::Origin {}
-}
+pub use self::pallet::*;
 
-decl_storage! {
-	trait Store for Module<T: Config> as TestRuntime {
-		ExtrinsicData: map hasher(blake2_128_concat) u32 => Vec<u8>;
-		// The current block number being processed. Set by `execute_block`.
-		Number get(fn number): Option<BlockNumber>;
-		ParentHash get(fn parent_hash): Hash;
-		NewAuthorities get(fn new_authorities): Option<Vec<AuthorityId>>;
-		StorageDigest get(fn storage_digest): Option<Digest>;
-		Authorities get(fn authorities) config(): Vec<AuthorityId>;
+#[frame_support::pallet]
+mod pallet {
+	use super::*;
+	use frame_support::pallet_prelude::*;
+
+	#[pallet::pallet]
+	#[pallet::generate_store(pub(super) trait Store)]
+	#[pallet::without_storage_info]
+	pub struct Pallet<T>(PhantomData<T>);
+
+	#[pallet::config]
+	pub trait Config: frame_system::Config {}
+
+	#[pallet::storage]
+	pub type ExtrinsicData<T> = StorageMap<_, Blake2_128Concat, u32, Vec<u8>, ValueQuery>;
+
+	// The current block number being processed. Set by `execute_block`.
+	#[pallet::storage]
+	pub type Number<T> = StorageValue<_, BlockNumber, OptionQuery>;
+
+	#[pallet::storage]
+	pub type ParentHash<T> = StorageValue<_, Hash, ValueQuery>;
+
+	#[pallet::storage]
+	pub type NewAuthorities<T> = StorageValue<_, Vec<AuthorityId>, OptionQuery>;
+
+	#[pallet::storage]
+	pub type StorageDigest<T> = StorageValue<_, Digest, OptionQuery>;
+
+	#[pallet::storage]
+	pub type Authorities<T> = StorageValue<_, Vec<AuthorityId>, ValueQuery>;
+
+	#[pallet::genesis_config]
+	#[cfg_attr(feature = "std", derive(Default))]
+	pub struct GenesisConfig {
+		pub authorities: Vec<AuthorityId>,
+	}
+
+	#[pallet::genesis_build]
+	impl<T: Config> GenesisBuild<T> for GenesisConfig {
+		fn build(&self) {
+			<Authorities<T>>::put(self.authorities.clone());
+		}
 	}
 }
 
@@ -69,28 +101,28 @@ pub fn nonce_of(who: AccountId) -> u64 {
 
 pub fn initialize_block(header: &Header) {
 	// populate environment.
-	<Number>::put(&header.number);
-	<ParentHash>::put(&header.parent_hash);
-	<StorageDigest>::put(header.digest());
+	<Number<Runtime>>::put(&header.number);
+	<ParentHash<Runtime>>::put(&header.parent_hash);
+	<StorageDigest<Runtime>>::put(header.digest());
 	storage::unhashed::put(well_known_keys::EXTRINSIC_INDEX, &0u32);
 
 	// try to read something that depends on current header digest
 	// so that it'll be included in execution proof
 	if let Some(generic::DigestItem::Other(v)) = header.digest().logs().iter().next() {
-		let _: Option<u32> = storage::unhashed::get(&v);
+		let _: Option<u32> = storage::unhashed::get(v);
 	}
 }
 
 pub fn authorities() -> Vec<AuthorityId> {
-	Authorities::get()
+	<Authorities<Runtime>>::get()
 }
 
 pub fn get_block_number() -> Option<BlockNumber> {
-	Number::get()
+	<Number<Runtime>>::get()
 }
 
 pub fn take_block_number() -> Option<BlockNumber> {
-	Number::take()
+	<Number<Runtime>>::take()
 }
 
 #[derive(Copy, Clone)]
@@ -124,8 +156,8 @@ fn execute_block_with_state_root_handler(block: &mut Block, mode: Mode) -> Heade
 		header.state_root = new_header.state_root;
 	} else {
 		info_expect_equal_hash(&new_header.state_root, &header.state_root);
-		assert!(
-			new_header.state_root == header.state_root,
+		assert_eq!(
+			new_header.state_root, header.state_root,
 			"Storage root must match that calculated.",
 		);
 	}
@@ -134,8 +166,8 @@ fn execute_block_with_state_root_handler(block: &mut Block, mode: Mode) -> Heade
 		header.extrinsics_root = new_header.extrinsics_root;
 	} else {
 		info_expect_equal_hash(&new_header.extrinsics_root, &header.extrinsics_root);
-		assert!(
-			new_header.extrinsics_root == header.extrinsics_root,
+		assert_eq!(
+			new_header.extrinsics_root, header.extrinsics_root,
 			"Transaction trie root must be valid.",
 		);
 	}
@@ -187,26 +219,28 @@ pub fn execute_transaction(utx: Extrinsic) -> ApplyExtrinsicResult {
 	let extrinsic_index: u32 =
 		storage::unhashed::get(well_known_keys::EXTRINSIC_INDEX).unwrap_or_default();
 	let result = execute_transaction_backend(&utx, extrinsic_index);
-	ExtrinsicData::insert(extrinsic_index, utx.encode());
+	<ExtrinsicData<Runtime>>::insert(extrinsic_index, utx.encode());
 	storage::unhashed::put(well_known_keys::EXTRINSIC_INDEX, &(extrinsic_index + 1));
 	result
 }
 
 /// Finalize the block.
 pub fn finalize_block() -> Header {
+	use sp_core::storage::StateVersion;
 	let extrinsic_index: u32 = storage::unhashed::take(well_known_keys::EXTRINSIC_INDEX).unwrap();
-	let txs: Vec<_> = (0..extrinsic_index).map(ExtrinsicData::take).collect();
-	let extrinsics_root = trie::blake2_256_ordered_root(txs).into();
-	let number = <Number>::take().expect("Number is set by `initialize_block`");
-	let parent_hash = <ParentHash>::take();
-	let mut digest = <StorageDigest>::take().expect("StorageDigest is set by `initialize_block`");
+	let txs: Vec<_> = (0..extrinsic_index).map(<ExtrinsicData<Runtime>>::take).collect();
+	let extrinsics_root = trie::blake2_256_ordered_root(txs, StateVersion::V0);
+	let number = <Number<Runtime>>::take().expect("Number is set by `initialize_block`");
+	let parent_hash = <ParentHash<Runtime>>::take();
+	let mut digest =
+		<StorageDigest<Runtime>>::take().expect("StorageDigest is set by `initialize_block`");
 
-	let o_new_authorities = <NewAuthorities>::take();
+	let o_new_authorities = <NewAuthorities<Runtime>>::take();
 
 	// This MUST come after all changes to storage are done. Otherwise we will fail the
 	// “Storage root does not match that calculated” assertion.
-	let storage_root =
-		Hash::decode(&mut &storage_root()[..]).expect("`storage_root` is a valid hash");
+	let storage_root = Hash::decode(&mut &storage_root(StateVersion::V1)[..])
+		.expect("`storage_root` is a valid hash");
 
 	if let Some(new_authorities) = o_new_authorities {
 		digest.push(generic::DigestItem::Consensus(*b"aura", new_authorities.encode()));
@@ -234,11 +268,11 @@ fn execute_transaction_backend(utx: &Extrinsic, extrinsic_index: u32) -> ApplyEx
 		Extrinsic::StorageChange(key, value) =>
 			execute_storage_change(key, value.as_ref().map(|v| &**v)),
 		Extrinsic::OffchainIndexSet(key, value) => {
-			sp_io::offchain_index::set(&key, &value);
+			sp_io::offchain_index::set(key, value);
 			Ok(Ok(()))
 		},
 		Extrinsic::OffchainIndexClear(key) => {
-			sp_io::offchain_index::clear(&key);
+			sp_io::offchain_index::clear(key);
 			Ok(Ok(()))
 		},
 		Extrinsic::Store(data) => execute_store(data.clone()),
@@ -249,7 +283,7 @@ fn execute_transfer_backend(tx: &Transfer) -> ApplyExtrinsicResult {
 	// check nonce
 	let nonce_key = tx.from.to_keyed_vec(NONCE_OF);
 	let expected_nonce: u64 = storage::hashed::get_or(&blake2_256, &nonce_key, 0);
-	if !(tx.nonce == expected_nonce) {
+	if tx.nonce != expected_nonce {
 		return Err(InvalidTransaction::Stale.into())
 	}
 
@@ -261,7 +295,7 @@ fn execute_transfer_backend(tx: &Transfer) -> ApplyExtrinsicResult {
 	let from_balance: u64 = storage::hashed::get_or(&blake2_256, &from_balance_key, 0);
 
 	// enact transfer
-	if !(tx.amount <= from_balance) {
+	if tx.amount > from_balance {
 		return Err(InvalidTransaction::Payment.into())
 	}
 	let to_balance_key = tx.to.to_keyed_vec(BALANCE_OF);
@@ -279,7 +313,7 @@ fn execute_store(data: Vec<u8>) -> ApplyExtrinsicResult {
 }
 
 fn execute_new_authorities_backend(new_authorities: &[AuthorityId]) -> ApplyExtrinsicResult {
-	NewAuthorities::put(new_authorities.to_vec());
+	<NewAuthorities<Runtime>>::put(new_authorities.to_vec());
 	Ok(Ok(()))
 }
 
@@ -321,7 +355,6 @@ mod tests {
 	use sp_core::{
 		map,
 		traits::{CodeExecutor, RuntimeCode},
-		NeverNativeValue,
 	};
 	use sp_io::{hashing::twox_128, TestExternalities};
 	use substrate_test_runtime_client::{AccountKeyring, Sr25519Keyring};
@@ -342,7 +375,7 @@ mod tests {
 	}
 
 	fn executor() -> NativeElseWasmExecutor<NativeDispatch> {
-		NativeElseWasmExecutor::new(WasmExecutionMethod::Interpreted, None, 8)
+		NativeElseWasmExecutor::new(WasmExecutionMethod::Interpreted, None, 8, 2)
 	}
 
 	fn new_test_ext() -> TestExternalities {
@@ -351,6 +384,7 @@ mod tests {
 			Sr25519Keyring::Bob.to_raw_public(),
 			Sr25519Keyring::Charlie.to_raw_public(),
 		];
+
 		TestExternalities::new_with_code(
 			wasm_binary_unwrap(),
 			sp_core::storage::Storage {
@@ -359,7 +393,7 @@ mod tests {
 					twox_128(b"sys:auth").to_vec() => authorities.encode(),
 					blake2_256(&AccountKeyring::Alice.to_raw_public().to_keyed_vec(b"balance:")).to_vec() => {
 						vec![111u8, 0, 0, 0, 0, 0, 0, 0]
-					}
+					},
 				],
 				children_default: map![],
 			},
@@ -404,14 +438,7 @@ mod tests {
 			};
 
 			executor()
-				.call::<NeverNativeValue, fn() -> _>(
-					&mut ext,
-					&runtime_code,
-					"Core_execute_block",
-					&b.encode(),
-					false,
-					None,
-				)
+				.call(&mut ext, &runtime_code, "Core_execute_block", &b.encode(), false)
 				.0
 				.unwrap();
 		})
@@ -513,14 +540,7 @@ mod tests {
 			};
 
 			executor()
-				.call::<NeverNativeValue, fn() -> _>(
-					&mut ext,
-					&runtime_code,
-					"Core_execute_block",
-					&b.encode(),
-					false,
-					None,
-				)
+				.call(&mut ext, &runtime_code, "Core_execute_block", &b.encode(), false)
 				.0
 				.unwrap();
 		})

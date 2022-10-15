@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2018-2021 Parity Technologies (UK) Ltd.
+// Copyright (C) 2018-2022 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -24,6 +24,7 @@ use crate::Config;
 use codec::Encode;
 use frame_support::{
 	parameter_types,
+	traits::{ConstU32, ConstU64},
 	weights::{
 		constants::{RocksDbWeight, WEIGHT_PER_SECOND},
 		Weight,
@@ -36,16 +37,15 @@ use sp_runtime::{
 	Perbill,
 };
 use sp_staking::{
-	offence::{self, Kind, OffenceDetails},
+	offence::{self, DisableStrategy, Kind, OffenceDetails},
 	SessionIndex,
 };
-use std::cell::RefCell;
 
 pub struct OnOffenceHandler;
 
-thread_local! {
-	pub static ON_OFFENCE_PERBILL: RefCell<Vec<Perbill>> = RefCell::new(Default::default());
-	pub static OFFENCE_WEIGHT: RefCell<Weight> = RefCell::new(Default::default());
+parameter_types! {
+	pub static OnOffencePerbill: Vec<Perbill> = Default::default();
+	pub static OffenceWeight: Weight = Default::default();
 }
 
 impl<Reporter, Offender> offence::OnOffenceHandler<Reporter, Offender, Weight>
@@ -55,17 +55,18 @@ impl<Reporter, Offender> offence::OnOffenceHandler<Reporter, Offender, Weight>
 		_offenders: &[OffenceDetails<Reporter, Offender>],
 		slash_fraction: &[Perbill],
 		_offence_session: SessionIndex,
+		_disable_strategy: DisableStrategy,
 	) -> Weight {
-		ON_OFFENCE_PERBILL.with(|f| {
-			*f.borrow_mut() = slash_fraction.to_vec();
+		OnOffencePerbill::mutate(|f| {
+			*f = slash_fraction.to_vec();
 		});
 
-		OFFENCE_WEIGHT.with(|w| *w.borrow())
+		OffenceWeight::get()
 	}
 }
 
 pub fn with_on_offence_fractions<R, F: FnOnce(&mut Vec<Perbill>) -> R>(f: F) -> R {
-	ON_OFFENCE_PERBILL.with(|fractions| f(&mut *fractions.borrow_mut()))
+	OnOffencePerbill::mutate(|fractions| f(fractions))
 }
 
 type UncheckedExtrinsic = frame_system::mocking::MockUncheckedExtrinsic<Runtime>;
@@ -83,26 +84,25 @@ frame_support::construct_runtime!(
 );
 
 parameter_types! {
-	pub const BlockHashCount: u64 = 250;
 	pub BlockWeights: frame_system::limits::BlockWeights =
-		frame_system::limits::BlockWeights::simple_max(2 * WEIGHT_PER_SECOND);
+		frame_system::limits::BlockWeights::simple_max(2u64 * WEIGHT_PER_SECOND);
 }
 impl frame_system::Config for Runtime {
 	type BaseCallFilter = frame_support::traits::Everything;
 	type BlockWeights = ();
 	type BlockLength = ();
 	type DbWeight = RocksDbWeight;
-	type Origin = Origin;
+	type RuntimeOrigin = RuntimeOrigin;
 	type Index = u64;
 	type BlockNumber = u64;
-	type Call = Call;
+	type RuntimeCall = RuntimeCall;
 	type Hash = H256;
 	type Hashing = BlakeTwo256;
 	type AccountId = u64;
 	type Lookup = IdentityLookup<Self::AccountId>;
 	type Header = Header;
-	type Event = Event;
-	type BlockHashCount = BlockHashCount;
+	type RuntimeEvent = RuntimeEvent;
+	type BlockHashCount = ConstU64<250>;
 	type Version = ();
 	type PalletInfo = PalletInfo;
 	type AccountData = ();
@@ -111,10 +111,11 @@ impl frame_system::Config for Runtime {
 	type SystemWeightInfo = ();
 	type SS58Prefix = ();
 	type OnSetCode = ();
+	type MaxConsumers = ConstU32<16>;
 }
 
 impl Config for Runtime {
-	type Event = Event;
+	type RuntimeEvent = RuntimeEvent;
 	type IdentificationTuple = u64;
 	type OnOffenceHandler = OnOffenceHandler;
 }
@@ -166,8 +167,8 @@ impl<T: Clone> offence::Offence<T> for Offence<T> {
 		1
 	}
 
-	fn slash_fraction(offenders_count: u32, validator_set_count: u32) -> Perbill {
-		Perbill::from_percent(5 + offenders_count * 100 / validator_set_count)
+	fn slash_fraction(&self, offenders_count: u32) -> Perbill {
+		Perbill::from_percent(5 + offenders_count * 100 / self.validator_set_count)
 	}
 }
 

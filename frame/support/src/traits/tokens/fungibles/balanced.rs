@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2019-2021 Parity Technologies (UK) Ltd.
+// Copyright (C) 2019-2022 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -163,7 +163,7 @@ pub trait Balanced<AccountId>: Inspect<AccountId> {
 /// **WARNING**
 /// Do not use this directly unless you want trouble, since it allows you to alter account balances
 /// without keeping the issuance up to date. It has no safeguards against accidentally creating
-/// token imbalances in your system leading to accidental imflation or deflation. It's really just
+/// token imbalances in your system leading to accidental inflation or deflation. It's really just
 /// for the underlying datatype to implement so the user gets the much safer `Balanced` trait to
 /// use.
 pub trait Unbalanced<AccountId>: Inspect<AccountId> {
@@ -186,7 +186,7 @@ pub trait Unbalanced<AccountId>: Inspect<AccountId> {
 	) -> Result<Self::Balance, DispatchError> {
 		let old_balance = Self::balance(asset, who);
 		let (mut new_balance, mut amount) = if old_balance < amount {
-			Err(TokenError::NoFunds)?
+			return Err(TokenError::NoFunds.into())
 		} else {
 			(old_balance - amount, amount)
 		};
@@ -251,7 +251,7 @@ pub trait Unbalanced<AccountId>: Inspect<AccountId> {
 		let old_balance = Self::balance(asset, who);
 		let new_balance = old_balance.checked_add(&amount).ok_or(ArithmeticError::Overflow)?;
 		if new_balance < Self::minimum_balance(asset) {
-			Err(TokenError::BelowMinimum)?
+			return Err(TokenError::BelowMinimum.into())
 		}
 		if old_balance != new_balance {
 			Self::set_balance(asset, who, new_balance)?;

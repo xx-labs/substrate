@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2017-2021 Parity Technologies (UK) Ltd.
+// Copyright (C) 2017-2022 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,13 +17,15 @@
 
 //! State machine backends. These manage the code and storage of contracts.
 
+#[cfg(feature = "std")]
+use crate::trie_backend::TrieBackend;
 use crate::{
-	trie_backend::TrieBackend, trie_backend_essence::TrieBackendStorage, ChildStorageCollection,
-	StorageCollection, StorageKey, StorageValue, UsageInfo,
+	trie_backend_essence::TrieBackendStorage, ChildStorageCollection, StorageCollection,
+	StorageKey, StorageValue, UsageInfo,
 };
 use codec::Encode;
 use hash_db::Hasher;
-use sp_core::storage::{ChildInfo, TrackedStorageKey};
+use sp_core::storage::{ChildInfo, StateVersion, TrackedStorageKey};
 #[cfg(feature = "std")]
 use sp_core::traits::RuntimeCode;
 use sp_std::vec::Vec;
@@ -40,15 +42,13 @@ pub trait Backend<H: Hasher>: sp_std::fmt::Debug {
 	type Transaction: Consolidate + Default + Send;
 
 	/// Type of trie backend storage.
-	type TrieBackendStorage: TrieBackendStorage<H>;
+	type TrieBackendStorage: TrieBackendStorage<H, Overlay = Self::Transaction>;
 
 	/// Get keyed storage or None if there is nothing associated.
 	fn storage(&self, key: &[u8]) -> Result<Option<StorageValue>, Self::Error>;
 
 	/// Get keyed storage value hash or None if there is nothing associated.
-	fn storage_hash(&self, key: &[u8]) -> Result<Option<H::Out>, Self::Error> {
-		self.storage(key).map(|v| v.map(|v| H::hash(&v)))
-	}
+	fn storage_hash(&self, key: &[u8]) -> Result<Option<H::Out>, Self::Error>;
 
 	/// Get keyed child storage or None if there is nothing associated.
 	fn child_storage(
@@ -62,13 +62,11 @@ pub trait Backend<H: Hasher>: sp_std::fmt::Debug {
 		&self,
 		child_info: &ChildInfo,
 		key: &[u8],
-	) -> Result<Option<H::Out>, Self::Error> {
-		self.child_storage(child_info, key).map(|v| v.map(|v| H::hash(&v)))
-	}
+	) -> Result<Option<H::Out>, Self::Error>;
 
 	/// true if a key exists in storage.
 	fn exists_storage(&self, key: &[u8]) -> Result<bool, Self::Error> {
-		Ok(self.storage(key)?.is_some())
+		Ok(self.storage_hash(key)?.is_some())
 	}
 
 	/// true if a key exists in child storage.
@@ -77,7 +75,7 @@ pub trait Backend<H: Hasher>: sp_std::fmt::Debug {
 		child_info: &ChildInfo,
 		key: &[u8],
 	) -> Result<bool, Self::Error> {
-		Ok(self.child_storage(child_info, key)?.is_some())
+		Ok(self.child_storage_hash(child_info, key)?.is_some())
 	}
 
 	/// Return the next key in storage in lexicographic order or `None` if there is no value.
@@ -112,6 +110,7 @@ pub trait Backend<H: Hasher>: sp_std::fmt::Debug {
 		&self,
 		child_info: Option<&ChildInfo>,
 		prefix: Option<&[u8]>,
+		start_at: Option<&[u8]>,
 		f: F,
 	);
 
@@ -140,6 +139,7 @@ pub trait Backend<H: Hasher>: sp_std::fmt::Debug {
 	fn storage_root<'a>(
 		&self,
 		delta: impl Iterator<Item = (&'a [u8], Option<&'a [u8]>)>,
+		state_version: StateVersion,
 	) -> (H::Out, Self::Transaction)
 	where
 		H::Out: Ord;
@@ -151,6 +151,7 @@ pub trait Backend<H: Hasher>: sp_std::fmt::Debug {
 		&self,
 		child_info: &ChildInfo,
 		delta: impl Iterator<Item = (&'a [u8], Option<&'a [u8]>)>,
+		state_version: StateVersion,
 	) -> (H::Out, bool, Self::Transaction)
 	where
 		H::Out: Ord;
@@ -172,11 +173,6 @@ pub trait Backend<H: Hasher>: sp_std::fmt::Debug {
 		all
 	}
 
-	/// Try convert into trie backend.
-	fn as_trie_backend(&self) -> Option<&TrieBackend<Self::TrieBackendStorage, H>> {
-		None
-	}
-
 	/// Calculate the storage root, with given delta over what is already stored
 	/// in the backend, and produce a "transaction" that can be used to commit.
 	/// Does include child storage updates.
@@ -186,6 +182,7 @@ pub trait Backend<H: Hasher>: sp_std::fmt::Debug {
 		child_deltas: impl Iterator<
 			Item = (&'a ChildInfo, impl Iterator<Item = (&'a [u8], Option<&'a [u8]>)>),
 		>,
+		state_version: StateVersion,
 	) -> (H::Out, Self::Transaction)
 	where
 		H::Out: Ord + Encode,
@@ -194,7 +191,8 @@ pub trait Backend<H: Hasher>: sp_std::fmt::Debug {
 		let mut child_roots: Vec<_> = Default::default();
 		// child first
 		for (child_info, child_delta) in child_deltas {
-			let (child_root, empty, child_txs) = self.child_storage_root(&child_info, child_delta);
+			let (child_root, empty, child_txs) =
+				self.child_storage_root(child_info, child_delta, state_version);
 			let prefixed_storage_key = child_info.prefixed_storage_key();
 			txs.consolidate(child_txs);
 			if empty {
@@ -207,6 +205,7 @@ pub trait Backend<H: Hasher>: sp_std::fmt::Debug {
 			delta
 				.map(|(k, v)| (k, v.as_ref().map(|v| &v[..])))
 				.chain(child_roots.iter().map(|(k, v)| (&k[..], v.as_ref().map(|v| &v[..])))),
+			state_version,
 		);
 		txs.consolidate(parent_txs);
 		(root, txs)
@@ -268,6 +267,16 @@ pub trait Backend<H: Hasher>: sp_std::fmt::Debug {
 	}
 }
 
+/// Something that can be converted into a [`TrieBackend`].
+#[cfg(feature = "std")]
+pub trait AsTrieBackend<H: Hasher, C = sp_trie::cache::LocalTrieCache<H>> {
+	/// Type of trie backend storage.
+	type TrieBackendStorage: TrieBackendStorage<H>;
+
+	/// Return the type as [`TrieBackend`].
+	fn as_trie_backend(&self) -> &TrieBackend<Self::TrieBackendStorage, H, C>;
+}
+
 /// Trait that allows consolidate two transactions together.
 pub trait Consolidate {
 	/// Consolidate two transactions into one.
@@ -286,7 +295,11 @@ impl Consolidate for Vec<(Option<ChildInfo>, StorageCollection)> {
 	}
 }
 
-impl<H: Hasher, KF: sp_trie::KeyFunction<H>> Consolidate for sp_trie::GenericMemoryDB<H, KF> {
+impl<H, KF> Consolidate for sp_trie::GenericMemoryDB<H, KF>
+where
+	H: Hasher,
+	KF: sp_trie::KeyFunction<H>,
+{
 	fn consolidate(&mut self, other: Self) {
 		sp_trie::GenericMemoryDB::consolidate(self, other)
 	}
@@ -303,7 +316,7 @@ pub struct BackendRuntimeCode<'a, B, H> {
 impl<'a, B: Backend<H>, H: Hasher> sp_core::traits::FetchRuntimeCode
 	for BackendRuntimeCode<'a, B, H>
 {
-	fn fetch_runtime_code<'b>(&'b self) -> Option<std::borrow::Cow<'b, [u8]>> {
+	fn fetch_runtime_code(&self) -> Option<std::borrow::Cow<[u8]>> {
 		self.backend
 			.storage(sp_core::storage::well_known_keys::CODE)
 			.ok()

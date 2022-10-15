@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2021 Parity Technologies (UK) Ltd.
+// Copyright (C) 2021-2022 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -21,19 +21,19 @@ use serde::{Deserialize, Serialize};
 
 use sp_runtime::traits::Block as BlockT;
 
-/// An encoded signed commitment proving that the given header has been finalized.
+/// An encoded finality proof proving that the given header has been finalized.
 /// The given bytes should be the SCALE-encoded representation of a
-/// `beefy_primitives::SignedCommitment`.
+/// `beefy_primitives::VersionedFinalityProof`.
 #[derive(Clone, Serialize, Deserialize)]
-pub struct SignedCommitment(sp_core::Bytes);
+pub struct EncodedVersionedFinalityProof(sp_core::Bytes);
 
-impl SignedCommitment {
+impl EncodedVersionedFinalityProof {
 	pub fn new<Block>(
-		signed_commitment: beefy_gadget::notification::SignedCommitment<Block>,
+		finality_proof: beefy_gadget::justification::BeefyVersionedFinalityProof<Block>,
 	) -> Self
 	where
 		Block: BlockT,
 	{
-		SignedCommitment(signed_commitment.encode().into())
+		EncodedVersionedFinalityProof(finality_proof.encode().into())
 	}
 }

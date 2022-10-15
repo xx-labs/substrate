@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2019-2021 Parity Technologies (UK) Ltd.
+// Copyright (C) 2019-2022 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -20,7 +20,10 @@
 use super::*;
 use crate as pallet_node_authorization;
 
-use frame_support::{ord_parameter_types, parameter_types, traits::GenesisBuild};
+use frame_support::{
+	ord_parameter_types,
+	traits::{ConstU32, ConstU64, GenesisBuild},
+};
 use frame_system::EnsureSignedBy;
 use sp_core::H256;
 use sp_runtime::{
@@ -44,25 +47,22 @@ frame_support::construct_runtime!(
 	}
 );
 
-parameter_types! {
-	pub const BlockHashCount: u64 = 250;
-}
 impl frame_system::Config for Test {
 	type BaseCallFilter = frame_support::traits::Everything;
 	type DbWeight = ();
 	type BlockWeights = ();
 	type BlockLength = ();
-	type Origin = Origin;
+	type RuntimeOrigin = RuntimeOrigin;
 	type Index = u64;
 	type BlockNumber = u64;
 	type Hash = H256;
-	type Call = Call;
+	type RuntimeCall = RuntimeCall;
 	type Hashing = BlakeTwo256;
 	type AccountId = u64;
 	type Lookup = IdentityLookup<Self::AccountId>;
 	type Header = Header;
-	type Event = Event;
-	type BlockHashCount = BlockHashCount;
+	type RuntimeEvent = RuntimeEvent;
+	type BlockHashCount = ConstU64<250>;
 	type Version = ();
 	type PalletInfo = PalletInfo;
 	type AccountData = ();
@@ -71,6 +71,7 @@ impl frame_system::Config for Test {
 	type SystemWeightInfo = ();
 	type SS58Prefix = ();
 	type OnSetCode = ();
+	type MaxConsumers = ConstU32<16>;
 }
 
 ord_parameter_types! {
@@ -79,14 +80,11 @@ ord_parameter_types! {
 	pub const Three: u64 = 3;
 	pub const Four: u64 = 4;
 }
-parameter_types! {
-	pub const MaxWellKnownNodes: u32 = 4;
-	pub const MaxPeerIdLength: u32 = 2;
-}
+
 impl Config for Test {
-	type Event = Event;
-	type MaxWellKnownNodes = MaxWellKnownNodes;
-	type MaxPeerIdLength = MaxPeerIdLength;
+	type RuntimeEvent = RuntimeEvent;
+	type MaxWellKnownNodes = ConstU32<4>;
+	type MaxPeerIdLength = ConstU32<2>;
 	type AddOrigin = EnsureSignedBy<One, u64>;
 	type RemoveOrigin = EnsureSignedBy<Two, u64>;
 	type SwapOrigin = EnsureSignedBy<Three, u64>;

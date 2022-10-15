@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2017-2021 Parity Technologies (UK) Ltd.
+// Copyright (C) 2017-2022 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -100,7 +100,7 @@ impl Metrics {
 		Ok(Self {
 			global_waiting_messages: register(
 				Gauge::new(
-					"finality_grandpa_until_imported_waiting_messages_number",
+					"substrate_finality_grandpa_until_imported_waiting_messages_number",
 					"Number of finality grandpa messages waiting within the until imported queue.",
 				)?,
 				registry,
@@ -354,7 +354,7 @@ fn warn_authority_wrong_target<H: ::std::fmt::Display>(hash: H, id: AuthorityId)
 	);
 }
 
-impl<Block: BlockT> BlockUntilImported<Block> for SignedMessage<Block> {
+impl<Block: BlockT> BlockUntilImported<Block> for SignedMessage<Block::Header> {
 	type Blocked = Self;
 
 	fn needs_waiting<BlockStatus: BlockStatusT<Block>>(
@@ -389,8 +389,13 @@ impl<Block: BlockT> BlockUntilImported<Block> for SignedMessage<Block> {
 
 /// Helper type definition for the stream which waits until vote targets for
 /// signed messages are imported.
-pub(crate) type UntilVoteTargetImported<Block, BlockStatus, BlockSyncRequester, I> =
-	UntilImported<Block, BlockStatus, BlockSyncRequester, I, SignedMessage<Block>>;
+pub(crate) type UntilVoteTargetImported<Block, BlockStatus, BlockSyncRequester, I> = UntilImported<
+	Block,
+	BlockStatus,
+	BlockSyncRequester,
+	I,
+	SignedMessage<<Block as BlockT>::Header>,
+>;
 
 /// This blocks a global message import, i.e. a commit or catch up messages,
 /// until all blocks referenced in its votes are known.
@@ -563,6 +568,7 @@ mod tests {
 	use sc_client_api::BlockImportNotification;
 	use sc_utils::mpsc::{tracing_unbounded, TracingUnboundedSender};
 	use sp_consensus::BlockOrigin;
+	use sp_core::crypto::UncheckedFrom;
 	use substrate_test_runtime_client::runtime::{Block, Hash, Header};
 
 	#[derive(Clone)]
@@ -586,7 +592,7 @@ mod tests {
 
 		fn import_header(&self, header: Header) {
 			let hash = header.hash();
-			let number = header.number().clone();
+			let number = *header.number();
 
 			self.known_blocks.lock().insert(hash, number);
 			self.sender
@@ -607,7 +613,7 @@ mod tests {
 
 	impl BlockStatusT<Block> for TestBlockStatus {
 		fn block_number(&self, hash: Hash) -> Result<Option<u64>, Error> {
-			Ok(self.inner.lock().get(&hash).map(|x| x.clone()))
+			Ok(self.inner.lock().get(&hash).map(|x| *x))
 		}
 	}
 
@@ -645,7 +651,7 @@ mod tests {
 
 	// unwrap the commit from `CommunicationIn` returning its fields in a tuple,
 	// panics if the given message isn't a commit
-	fn unapply_commit(msg: CommunicationIn<Block>) -> (u64, CompactCommit<Block>) {
+	fn unapply_commit(msg: CommunicationIn<Block>) -> (u64, CompactCommit<Header>) {
 		match msg {
 			voter::CommunicationIn::Commit(round, commit, ..) => (round, commit),
 			_ => panic!("expected commit"),
@@ -654,7 +660,7 @@ mod tests {
 
 	// unwrap the catch up from `CommunicationIn` returning its inner representation,
 	// panics if the given message isn't a catch up
-	fn unapply_catch_up(msg: CommunicationIn<Block>) -> CatchUp<Block> {
+	fn unapply_catch_up(msg: CommunicationIn<Block>) -> CatchUp<Header> {
 		match msg {
 			voter::CommunicationIn::CatchUp(catch_up, ..) => catch_up,
 			_ => panic!("expected catch up"),
@@ -739,7 +745,7 @@ mod tests {
 		let h2 = make_header(6);
 		let h3 = make_header(7);
 
-		let unknown_commit = CompactCommit::<Block> {
+		let unknown_commit = CompactCommit::<Header> {
 			target_hash: h1.hash(),
 			target_number: 5,
 			precommits: vec![
@@ -767,7 +773,7 @@ mod tests {
 		let h2 = make_header(6);
 		let h3 = make_header(7);
 
-		let known_commit = CompactCommit::<Block> {
+		let known_commit = CompactCommit::<Header> {
 			target_hash: h1.hash(),
 			target_number: 5,
 			precommits: vec![
@@ -796,8 +802,8 @@ mod tests {
 		let h3 = make_header(7);
 
 		let signed_prevote = |header: &Header| finality_grandpa::SignedPrevote {
-			id: Default::default(),
-			signature: Default::default(),
+			id: UncheckedFrom::unchecked_from([1; 32]),
+			signature: UncheckedFrom::unchecked_from([1; 64]),
 			prevote: finality_grandpa::Prevote {
 				target_hash: header.hash(),
 				target_number: *header.number(),
@@ -805,8 +811,8 @@ mod tests {
 		};
 
 		let signed_precommit = |header: &Header| finality_grandpa::SignedPrecommit {
-			id: Default::default(),
-			signature: Default::default(),
+			id: UncheckedFrom::unchecked_from([1; 32]),
+			signature: UncheckedFrom::unchecked_from([1; 64]),
 			precommit: finality_grandpa::Precommit {
 				target_hash: header.hash(),
 				target_number: *header.number(),
@@ -844,8 +850,8 @@ mod tests {
 		let h3 = make_header(7);
 
 		let signed_prevote = |header: &Header| finality_grandpa::SignedPrevote {
-			id: Default::default(),
-			signature: Default::default(),
+			id: UncheckedFrom::unchecked_from([1; 32]),
+			signature: UncheckedFrom::unchecked_from([1; 64]),
 			prevote: finality_grandpa::Prevote {
 				target_hash: header.hash(),
 				target_number: *header.number(),
@@ -853,8 +859,8 @@ mod tests {
 		};
 
 		let signed_precommit = |header: &Header| finality_grandpa::SignedPrecommit {
-			id: Default::default(),
-			signature: Default::default(),
+			id: UncheckedFrom::unchecked_from([1; 32]),
+			signature: UncheckedFrom::unchecked_from([1; 64]),
 			precommit: finality_grandpa::Precommit {
 				target_hash: header.hash(),
 				target_number: *header.number(),
@@ -909,7 +915,7 @@ mod tests {
 
 		// we create a commit message, with precommits for blocks 6 and 7 which
 		// we haven't imported.
-		let unknown_commit = CompactCommit::<Block> {
+		let unknown_commit = CompactCommit::<Header> {
 			target_hash: h1.hash(),
 			target_number: 5,
 			precommits: vec![

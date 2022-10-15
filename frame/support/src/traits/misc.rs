@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2019-2021 Parity Technologies (UK) Ltd.
+// Copyright (C) 2019-2022 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,10 +18,356 @@
 //! Smaller traits used in FRAME which don't need their own file.
 
 use crate::dispatch::Parameter;
-use codec::{CompactLen, Decode, DecodeAll, Encode, EncodeLike, Input, MaxEncodedLen};
+use codec::{CompactLen, Decode, DecodeLimit, Encode, EncodeLike, Input, MaxEncodedLen};
+use impl_trait_for_tuples::impl_for_tuples;
 use scale_info::{build::Fields, meta_type, Path, Type, TypeInfo, TypeParameter};
+use sp_arithmetic::traits::{CheckedAdd, CheckedMul, CheckedSub, Saturating};
+#[doc(hidden)]
+pub use sp_runtime::traits::{
+	ConstBool, ConstI128, ConstI16, ConstI32, ConstI64, ConstI8, ConstU128, ConstU16, ConstU32,
+	ConstU64, ConstU8, Get, GetDefault, TryCollect, TypedGet,
+};
 use sp_runtime::{traits::Block as BlockT, DispatchError};
 use sp_std::{cmp::Ordering, prelude::*};
+
+#[doc(hidden)]
+pub const DEFENSIVE_OP_PUBLIC_ERROR: &str = "a defensive failure has been triggered; please report the block number at https://github.com/paritytech/substrate/issues";
+#[doc(hidden)]
+pub const DEFENSIVE_OP_INTERNAL_ERROR: &str = "Defensive failure has been triggered!";
+
+/// Generic function to mark an execution path as ONLY defensive.
+///
+/// Similar to mark a match arm or `if/else` branch as `unreachable!`.
+#[macro_export]
+macro_rules! defensive {
+	() => {
+		frame_support::log::error!(
+			target: "runtime",
+			"{}",
+			$crate::traits::DEFENSIVE_OP_PUBLIC_ERROR
+		);
+		debug_assert!(false, "{}", $crate::traits::DEFENSIVE_OP_INTERNAL_ERROR);
+	};
+	($error:tt) => {
+		frame_support::log::error!(
+			target: "runtime",
+			"{}: {:?}",
+			$crate::traits::DEFENSIVE_OP_PUBLIC_ERROR,
+			$error
+		);
+		debug_assert!(false, "{}: {:?}", $crate::traits::DEFENSIVE_OP_INTERNAL_ERROR, $error);
+	};
+	($error:tt, $proof:tt) => {
+		frame_support::log::error!(
+			target: "runtime",
+			"{}: {:?}: {:?}",
+			$crate::traits::DEFENSIVE_OP_PUBLIC_ERROR,
+			$error,
+			$proof,
+		);
+		debug_assert!(false, "{}: {:?}: {:?}", $crate::traits::DEFENSIVE_OP_INTERNAL_ERROR, $error, $proof);
+	}
+}
+
+/// Prelude module for all defensive traits to be imported at once.
+pub mod defensive_prelude {
+	pub use super::{Defensive, DefensiveOption, DefensiveResult};
+}
+
+/// A trait to handle errors and options when you are really sure that a condition must hold, but
+/// not brave enough to `expect` on it, or a default fallback value makes more sense.
+///
+/// This trait mostly focuses on methods that eventually unwrap the inner value. See
+/// [`DefensiveResult`] and [`DefensiveOption`] for methods that specifically apply to the
+/// respective types.
+///
+/// Each function in this trait will have two side effects, aside from behaving exactly as the name
+/// would suggest:
+///
+/// 1. It panics on `#[debug_assertions]`, so if the infallible code is reached in any of the tests,
+///    you realize.
+/// 2. It will log an error using the runtime logging system. This might help you detect such bugs
+///    in production as well. Note that the log message, as of now, are not super expressive. Your
+///    best shot of fully diagnosing the error would be to infer the block number of which the log
+///    message was emitted, then re-execute that block using `check-block` or `try-runtime`
+///    subcommands in substrate client.
+pub trait Defensive<T> {
+	/// Exactly the same as `unwrap_or`, but it does the defensive warnings explained in the trait
+	/// docs.
+	fn defensive_unwrap_or(self, other: T) -> T;
+
+	/// Exactly the same as `unwrap_or_else`, but it does the defensive warnings explained in the
+	/// trait docs.
+	fn defensive_unwrap_or_else<F: FnOnce() -> T>(self, f: F) -> T;
+
+	/// Exactly the same as `unwrap_or_default`, but it does the defensive warnings explained in the
+	/// trait docs.
+	fn defensive_unwrap_or_default(self) -> T
+	where
+		T: Default;
+
+	/// Does not alter the inner value at all, but it will log warnings if the inner value is `None`
+	/// or `Err`.
+	///
+	/// In some ways, this is like  `.defensive_map(|x| x)`.
+	///
+	/// This is useful as:
+	/// ```nocompile
+	/// if let Some(inner) = maybe_value().defensive() {
+	/// 	 	..
+	/// }
+	/// ```
+	fn defensive(self) -> Self;
+
+	/// Same as [`Defensive::defensive`], but it takes a proof as input, and displays it if the
+	/// defensive operation has been triggered.
+	fn defensive_proof(self, proof: &'static str) -> Self;
+}
+
+/// Subset of methods similar to [`Defensive`] that can only work for a `Result`.
+pub trait DefensiveResult<T, E> {
+	/// Defensively map the error into another return type, but you are really sure that this
+	/// conversion should never be needed.
+	fn defensive_map_err<F, O: FnOnce(E) -> F>(self, o: O) -> Result<T, F>;
+
+	/// Defensively map and unpack the value to something else (`U`), or call the default callback
+	/// if `Err`, which should never happen.
+	fn defensive_map_or_else<U, D: FnOnce(E) -> U, F: FnOnce(T) -> U>(self, default: D, f: F) -> U;
+
+	/// Defensively transform this result into an option, discarding the `Err` variant if it
+	/// happens, which should never happen.
+	fn defensive_ok(self) -> Option<T>;
+
+	/// Exactly the same as `map`, but it prints the appropriate warnings if the value being mapped
+	/// is `Err`.
+	fn defensive_map<U, F: FnOnce(T) -> U>(self, f: F) -> Result<U, E>;
+}
+
+/// Subset of methods similar to [`Defensive`] that can only work for a `Option`.
+pub trait DefensiveOption<T> {
+	/// Potentially map and unpack the value to something else (`U`), or call the default callback
+	/// if `None`, which should never happen.
+	fn defensive_map_or_else<U, D: FnOnce() -> U, F: FnOnce(T) -> U>(self, default: D, f: F) -> U;
+
+	/// Defensively transform this option to a result, mapping `None` to the return value of an
+	/// error closure.
+	fn defensive_ok_or_else<E: sp_std::fmt::Debug, F: FnOnce() -> E>(self, err: F) -> Result<T, E>;
+
+	/// Defensively transform this option to a result, mapping `None` to a default value.
+	fn defensive_ok_or<E: sp_std::fmt::Debug>(self, err: E) -> Result<T, E>;
+
+	/// Exactly the same as `map`, but it prints the appropriate warnings if the value being mapped
+	/// is `None`.
+	fn defensive_map<U, F: FnOnce(T) -> U>(self, f: F) -> Option<U>;
+}
+
+impl<T> Defensive<T> for Option<T> {
+	fn defensive_unwrap_or(self, or: T) -> T {
+		match self {
+			Some(inner) => inner,
+			None => {
+				defensive!();
+				or
+			},
+		}
+	}
+
+	fn defensive_unwrap_or_else<F: FnOnce() -> T>(self, f: F) -> T {
+		match self {
+			Some(inner) => inner,
+			None => {
+				defensive!();
+				f()
+			},
+		}
+	}
+
+	fn defensive_unwrap_or_default(self) -> T
+	where
+		T: Default,
+	{
+		match self {
+			Some(inner) => inner,
+			None => {
+				defensive!();
+				Default::default()
+			},
+		}
+	}
+
+	fn defensive(self) -> Self {
+		match self {
+			Some(inner) => Some(inner),
+			None => {
+				defensive!();
+				None
+			},
+		}
+	}
+
+	fn defensive_proof(self, proof: &'static str) -> Self {
+		if self.is_none() {
+			defensive!(proof);
+		}
+		self
+	}
+}
+
+impl<T, E: sp_std::fmt::Debug> Defensive<T> for Result<T, E> {
+	fn defensive_unwrap_or(self, or: T) -> T {
+		match self {
+			Ok(inner) => inner,
+			Err(e) => {
+				defensive!(e);
+				or
+			},
+		}
+	}
+
+	fn defensive_unwrap_or_else<F: FnOnce() -> T>(self, f: F) -> T {
+		match self {
+			Ok(inner) => inner,
+			Err(e) => {
+				defensive!(e);
+				f()
+			},
+		}
+	}
+
+	fn defensive_unwrap_or_default(self) -> T
+	where
+		T: Default,
+	{
+		match self {
+			Ok(inner) => inner,
+			Err(e) => {
+				defensive!(e);
+				Default::default()
+			},
+		}
+	}
+
+	fn defensive(self) -> Self {
+		match self {
+			Ok(inner) => Ok(inner),
+			Err(e) => {
+				defensive!(e);
+				Err(e)
+			},
+		}
+	}
+
+	fn defensive_proof(self, proof: &'static str) -> Self {
+		match self {
+			Ok(inner) => Ok(inner),
+			Err(e) => {
+				defensive!(e, proof);
+				Err(e)
+			},
+		}
+	}
+}
+
+impl<T, E: sp_std::fmt::Debug> DefensiveResult<T, E> for Result<T, E> {
+	fn defensive_map_err<F, O: FnOnce(E) -> F>(self, o: O) -> Result<T, F> {
+		self.map_err(|e| {
+			defensive!(e);
+			o(e)
+		})
+	}
+
+	fn defensive_map_or_else<U, D: FnOnce(E) -> U, F: FnOnce(T) -> U>(self, default: D, f: F) -> U {
+		self.map_or_else(
+			|e| {
+				defensive!(e);
+				default(e)
+			},
+			f,
+		)
+	}
+
+	fn defensive_ok(self) -> Option<T> {
+		match self {
+			Ok(inner) => Some(inner),
+			Err(e) => {
+				defensive!(e);
+				None
+			},
+		}
+	}
+
+	fn defensive_map<U, F: FnOnce(T) -> U>(self, f: F) -> Result<U, E> {
+		match self {
+			Ok(inner) => Ok(f(inner)),
+			Err(e) => {
+				defensive!(e);
+				Err(e)
+			},
+		}
+	}
+}
+
+impl<T> DefensiveOption<T> for Option<T> {
+	fn defensive_map_or_else<U, D: FnOnce() -> U, F: FnOnce(T) -> U>(self, default: D, f: F) -> U {
+		self.map_or_else(
+			|| {
+				defensive!();
+				default()
+			},
+			f,
+		)
+	}
+
+	fn defensive_ok_or_else<E: sp_std::fmt::Debug, F: FnOnce() -> E>(self, err: F) -> Result<T, E> {
+		self.ok_or_else(|| {
+			let err_value = err();
+			defensive!(err_value);
+			err_value
+		})
+	}
+
+	fn defensive_ok_or<E: sp_std::fmt::Debug>(self, err: E) -> Result<T, E> {
+		self.ok_or_else(|| {
+			defensive!(err);
+			err
+		})
+	}
+
+	fn defensive_map<U, F: FnOnce(T) -> U>(self, f: F) -> Option<U> {
+		match self {
+			Some(inner) => Some(f(inner)),
+			None => {
+				defensive!();
+				None
+			},
+		}
+	}
+}
+
+/// A variant of [`Defensive`] with the same rationale, for the arithmetic operations where in
+/// case an infallible operation fails, it saturates.
+pub trait DefensiveSaturating {
+	/// Add `self` and `other` defensively.
+	fn defensive_saturating_add(self, other: Self) -> Self;
+	/// Subtract `other` from `self` defensively.
+	fn defensive_saturating_sub(self, other: Self) -> Self;
+	/// Multiply `self` and `other` defensively.
+	fn defensive_saturating_mul(self, other: Self) -> Self;
+}
+
+// NOTE: A bit unfortunate, since T has to be bound by all the traits needed. Could make it
+// `DefensiveSaturating<T>` to mitigate.
+impl<T: Saturating + CheckedAdd + CheckedMul + CheckedSub> DefensiveSaturating for T {
+	fn defensive_saturating_add(self, other: Self) -> Self {
+		self.checked_add(&other).defensive_unwrap_or_else(|| self.saturating_add(other))
+	}
+	fn defensive_saturating_sub(self, other: Self) -> Self {
+		self.checked_sub(&other).defensive_unwrap_or_else(|| self.saturating_sub(other))
+	}
+	fn defensive_saturating_mul(self, other: Self) -> Self {
+		self.checked_mul(&other).defensive_unwrap_or_else(|| self.saturating_mul(other))
+	}
+}
 
 /// Anything that can have a `::len()` method.
 pub trait Len {
@@ -38,47 +384,16 @@ where
 	}
 }
 
-/// A trait for querying a single value from a type.
-///
-/// It is not required that the value is constant.
-pub trait Get<T> {
-	/// Return the current value.
-	fn get() -> T;
-}
-
-impl<T: Default> Get<T> for () {
-	fn get() -> T {
-		T::default()
-	}
-}
-
-/// Implement Get by returning Default for any type that implements Default.
-pub struct GetDefault;
-impl<T: Default> Get<T> for GetDefault {
-	fn get() -> T {
-		T::default()
-	}
-}
-
-/// Implement `Get<u32>` and `Get<Option<u32>>` using the given const.
-pub struct ConstU32<const T: u32>;
-
-impl<const T: u32> Get<u32> for ConstU32<T> {
-	fn get() -> u32 {
-		T
-	}
-}
-
-impl<const T: u32> Get<Option<u32>> for ConstU32<T> {
-	fn get() -> Option<u32> {
-		Some(T)
-	}
-}
-
 /// A type for which some values make sense to be able to drop without further consideration.
 pub trait TryDrop: Sized {
 	/// Drop an instance cleanly. Only works if its value represents "no-operation".
 	fn try_drop(self) -> Result<(), Self>;
+}
+
+impl TryDrop for () {
+	fn try_drop(self) -> Result<(), Self> {
+		Ok(())
+	}
 }
 
 /// Return type used when we need to return one of two items, each of the opposite direction or
@@ -154,14 +469,18 @@ impl<A, B> SameOrOther<A, B> {
 }
 
 /// Handler for when a new account has been created.
-#[impl_trait_for_tuples::impl_for_tuples(30)]
+#[cfg_attr(all(not(feature = "tuples-96"), not(feature = "tuples-128")), impl_for_tuples(64))]
+#[cfg_attr(all(feature = "tuples-96", not(feature = "tuples-128")), impl_for_tuples(96))]
+#[cfg_attr(feature = "tuples-128", impl_for_tuples(128))]
 pub trait OnNewAccount<AccountId> {
 	/// A new account `who` has been registered.
 	fn on_new_account(who: &AccountId);
 }
 
 /// The account with the given id was reaped.
-#[impl_trait_for_tuples::impl_for_tuples(30)]
+#[cfg_attr(all(not(feature = "tuples-96"), not(feature = "tuples-128")), impl_for_tuples(64))]
+#[cfg_attr(all(feature = "tuples-96", not(feature = "tuples-128")), impl_for_tuples(96))]
+#[cfg_attr(feature = "tuples-128", impl_for_tuples(128))]
 pub trait OnKilledAccount<AccountId> {
 	/// The account with the given id was reaped.
 	fn on_killed_account(who: &AccountId);
@@ -183,7 +502,7 @@ pub trait HandleLifetime<T> {
 impl<T> HandleLifetime<T> for () {}
 
 pub trait Time {
-	type Moment: sp_arithmetic::traits::AtLeast32Bit + Parameter + Default + Copy;
+	type Moment: sp_arithmetic::traits::AtLeast32Bit + Parameter + Default + Copy + MaxEncodedLen;
 
 	fn now() -> Self::Moment;
 }
@@ -301,7 +620,7 @@ pub trait PrivilegeCmp<Origin> {
 
 /// Implementation of [`PrivilegeCmp`] that only checks for equal origins.
 ///
-/// This means it will either return [`Origin::Equal`] or `None`.
+/// This means it will either return [`Ordering::Equal`] or `None`.
 pub struct EqualPrivilegeOnly;
 impl<Origin: PartialEq> PrivilegeCmp<Origin> for EqualPrivilegeOnly {
 	fn cmp_privilege(left: &Origin, right: &Origin) -> Option<Ordering> {
@@ -319,7 +638,9 @@ impl<Origin: PartialEq> PrivilegeCmp<Origin> for EqualPrivilegeOnly {
 /// but cannot preform any alterations. More specifically alterations are
 /// not forbidden, but they are not persisted in any way after the worker
 /// has finished.
-#[impl_trait_for_tuples::impl_for_tuples(30)]
+#[cfg_attr(all(not(feature = "tuples-96"), not(feature = "tuples-128")), impl_for_tuples(64))]
+#[cfg_attr(all(feature = "tuples-96", not(feature = "tuples-128")), impl_for_tuples(96))]
+#[cfg_attr(feature = "tuples-128", impl_for_tuples(128))]
 pub trait OffchainWorker<BlockNumber> {
 	/// This function is being called after every block import (when fully synced).
 	///
@@ -390,13 +711,13 @@ pub trait EstimateCallFee<Call, Balance> {
 	///
 	/// The dispatch info and the length is deduced from the call. The post info can optionally be
 	/// provided.
-	fn estimate_call_fee(call: &Call, post_info: crate::weights::PostDispatchInfo) -> Balance;
+	fn estimate_call_fee(call: &Call, post_info: crate::dispatch::PostDispatchInfo) -> Balance;
 }
 
 // Useful for building mocks.
 #[cfg(feature = "std")]
 impl<Call, Balance: From<u32>, const T: u32> EstimateCallFee<Call, Balance> for ConstU32<T> {
-	fn estimate_call_fee(_: &Call, _: crate::weights::PostDispatchInfo) -> Balance {
+	fn estimate_call_fee(_: &Call, _: crate::dispatch::PostDispatchInfo) -> Balance {
 		T.into()
 	}
 }
@@ -432,7 +753,10 @@ impl<T: Encode> Encode for WrapperOpaque<T> {
 
 impl<T: Decode> Decode for WrapperOpaque<T> {
 	fn decode<I: Input>(input: &mut I) -> Result<Self, codec::Error> {
-		Ok(Self(T::decode(&mut &<Vec<u8>>::decode(input)?[..])?))
+		Ok(Self(T::decode_all_with_depth_limit(
+			sp_api::MAX_EXTRINSIC_DEPTH,
+			&mut &<Vec<u8>>::decode(input)?[..],
+		)?))
 	}
 
 	fn skip<I: Input>(input: &mut I) -> Result<(), codec::Error> {
@@ -450,7 +774,7 @@ impl<T: MaxEncodedLen> MaxEncodedLen for WrapperOpaque<T> {
 	fn max_encoded_len() -> usize {
 		let t_max_len = T::max_encoded_len();
 
-		// See scale encoding https://docs.substrate.io/v3/advanced/scale-codec
+		// See scale encoding: https://docs.substrate.io/reference/scale-codec/
 		if t_max_len < 64 {
 			t_max_len + 1
 		} else if t_max_len < 2usize.pow(14) {
@@ -494,7 +818,7 @@ impl<T: Decode> WrapperKeepOpaque<T> {
 	///
 	/// Returns `None` if the decoding failed.
 	pub fn try_decode(&self) -> Option<T> {
-		T::decode_all(&mut &self.data[..]).ok()
+		T::decode_all_with_depth_limit(sp_api::MAX_EXTRINSIC_DEPTH, &mut &self.data[..]).ok()
 	}
 
 	/// Returns the length of the encoded `T`.
@@ -564,9 +888,92 @@ impl<T: TypeInfo + 'static> TypeInfo for WrapperKeepOpaque<T> {
 	}
 }
 
+/// A interface for looking up preimages from their hash on chain.
+pub trait PreimageProvider<Hash> {
+	/// Returns whether a preimage exists for a given hash.
+	///
+	/// A value of `true` implies that `get_preimage` is `Some`.
+	fn have_preimage(hash: &Hash) -> bool;
+
+	/// Returns the preimage for a given hash.
+	fn get_preimage(hash: &Hash) -> Option<Vec<u8>>;
+
+	/// Returns whether a preimage request exists for a given hash.
+	fn preimage_requested(hash: &Hash) -> bool;
+
+	/// Request that someone report a preimage. Providers use this to optimise the economics for
+	/// preimage reporting.
+	fn request_preimage(hash: &Hash);
+
+	/// Cancel a previous preimage request.
+	fn unrequest_preimage(hash: &Hash);
+}
+
+impl<Hash> PreimageProvider<Hash> for () {
+	fn have_preimage(_: &Hash) -> bool {
+		false
+	}
+	fn get_preimage(_: &Hash) -> Option<Vec<u8>> {
+		None
+	}
+	fn preimage_requested(_: &Hash) -> bool {
+		false
+	}
+	fn request_preimage(_: &Hash) {}
+	fn unrequest_preimage(_: &Hash) {}
+}
+
+/// A interface for managing preimages to hashes on chain.
+///
+/// Note that this API does not assume any underlying user is calling, and thus
+/// does not handle any preimage ownership or fees. Other system level logic that
+/// uses this API should implement that on their own side.
+pub trait PreimageRecipient<Hash>: PreimageProvider<Hash> {
+	/// Maximum size of a preimage.
+	type MaxSize: Get<u32>;
+
+	/// Store the bytes of a preimage on chain infallible due to the bounded type.
+	fn note_preimage(bytes: crate::BoundedVec<u8, Self::MaxSize>);
+
+	/// Clear a previously noted preimage. This is infallible and should be treated more like a
+	/// hint - if it was not previously noted or if it is now requested, then this will not do
+	/// anything.
+	fn unnote_preimage(hash: &Hash);
+}
+
+impl<Hash> PreimageRecipient<Hash> for () {
+	type MaxSize = ();
+	fn note_preimage(_: crate::BoundedVec<u8, Self::MaxSize>) {}
+	fn unnote_preimage(_: &Hash) {}
+}
+
 #[cfg(test)]
 mod test {
 	use super::*;
+	use sp_std::marker::PhantomData;
+
+	#[derive(Encode, Decode)]
+	enum NestedType {
+		Nested(Box<Self>),
+		Done,
+	}
+
+	#[test]
+	fn test_opaque_wrapper_decode_limit() {
+		let limit = sp_api::MAX_EXTRINSIC_DEPTH as usize;
+		let mut ok_bytes = vec![0u8; limit];
+		ok_bytes.push(1u8);
+		let mut err_bytes = vec![0u8; limit + 1];
+		err_bytes.push(1u8);
+		assert!(<WrapperOpaque<NestedType>>::decode(&mut &ok_bytes.encode()[..]).is_ok());
+		assert!(<WrapperOpaque<NestedType>>::decode(&mut &err_bytes.encode()[..]).is_err());
+
+		let ok_keep_opaque = WrapperKeepOpaque { data: ok_bytes, _phantom: PhantomData };
+		let err_keep_opaque = WrapperKeepOpaque { data: err_bytes, _phantom: PhantomData };
+
+		assert!(<WrapperKeepOpaque<NestedType>>::try_decode(&ok_keep_opaque).is_some());
+		assert!(<WrapperKeepOpaque<NestedType>>::try_decode(&err_keep_opaque).is_none());
+	}
 
 	#[test]
 	fn test_opaque_wrapper() {
@@ -595,6 +1002,10 @@ mod test {
 			2usize.pow(14) - 1 + 2
 		);
 		assert_eq!(<WrapperOpaque<[u8; 2usize.pow(14)]>>::max_encoded_len(), 2usize.pow(14) + 4);
+
+		let data = 4u64;
+		// Ensure that we check that the `Vec<u8>` is consumed completly on decode.
+		assert!(WrapperOpaque::<u32>::decode(&mut &data.encode().encode()[..]).is_err());
 	}
 
 	#[test]

@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2017-2021 Parity Technologies (UK) Ltd.
+// Copyright (C) 2017-2022 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -28,8 +28,6 @@ mod ext;
 #[cfg(feature = "std")]
 mod in_memory_backend;
 pub(crate) mod overlayed_changes;
-#[cfg(feature = "std")]
-mod proving_backend;
 #[cfg(feature = "std")]
 mod read_only;
 mod stats;
@@ -126,6 +124,7 @@ impl sp_std::fmt::Display for DefaultError {
 
 pub use crate::{
 	backend::Backend,
+	error::{Error, ExecutionError},
 	ext::Ext,
 	overlayed_changes::{
 		ChildStorageCollection, IndexOperation, OffchainChangesCollection,
@@ -133,57 +132,53 @@ pub use crate::{
 		StorageTransactionCache, StorageValue,
 	},
 	stats::{StateMachineStats, UsageInfo, UsageUnit},
-	trie_backend::TrieBackend,
+	trie_backend::{TrieBackend, TrieBackendBuilder},
 	trie_backend_essence::{Storage, TrieBackendStorage},
 };
-pub use error::{Error, ExecutionError};
 
 #[cfg(feature = "std")]
 mod std_reexport {
 	pub use crate::{
 		basic::BasicExternalities,
 		error::{Error, ExecutionError},
-		in_memory_backend::new_in_mem,
-		proving_backend::{
-			create_proof_check_backend, ProofRecorder, ProvingBackend, ProvingBackendRecorder,
-		},
+		in_memory_backend::{new_in_mem, new_in_mem_hash_key},
 		read_only::{InspectState, ReadOnlyExternalities},
 		testing::TestExternalities,
+		trie_backend::create_proof_check_backend,
 	};
 	pub use sp_trie::{
-		trie_types::{Layout, TrieDBMut},
-		CompactProof, DBValue, MemoryDB, StorageProof, TrieMut,
+		trie_types::{TrieDBMutV0, TrieDBMutV1},
+		CompactProof, DBValue, LayoutV0, LayoutV1, MemoryDB, StorageProof, TrieMut,
 	};
 }
 
 #[cfg(feature = "std")]
 mod execution {
+	use crate::backend::AsTrieBackend;
+
 	use super::*;
-	use codec::{Codec, Decode, Encode};
+	use codec::Codec;
 	use hash_db::Hasher;
 	use smallvec::SmallVec;
 	use sp_core::{
 		hexdisplay::HexDisplay,
 		storage::{ChildInfo, ChildType, PrefixedStorageKey},
 		traits::{CodeExecutor, ReadRuntimeVersionExt, RuntimeCode, SpawnNamed},
-		NativeOrEncoded, NeverNativeValue,
 	};
 	use sp_externalities::Extensions;
 	use std::{
 		collections::{HashMap, HashSet},
 		fmt,
-		panic::UnwindSafe,
-		result,
 	};
 
 	const PROOF_CLOSE_TRANSACTION: &str = "\
 		Closing a transaction that was started in this function. Client initiated transactions
 		are protected from being closed by the runtime. qed";
 
-	pub(crate) type CallResult<R, E> = Result<NativeOrEncoded<R>, E>;
+	pub(crate) type CallResult<E> = Result<Vec<u8>, E>;
 
 	/// Default handler of the execution manager.
-	pub type DefaultHandler<R, E> = fn(CallResult<R, E>, CallResult<R, E>) -> CallResult<R, E>;
+	pub type DefaultHandler<E> = fn(CallResult<E>, CallResult<E>) -> CallResult<E>;
 
 	/// Trie backend with in-memory storage.
 	pub type InMemoryBackend<H> = TrieBackend<MemoryDB<H>, H>;
@@ -245,9 +240,7 @@ mod execution {
 
 	impl ExecutionStrategy {
 		/// Gets the corresponding manager for the execution strategy.
-		pub fn get_manager<E: fmt::Debug, R: Decode + Encode>(
-			self,
-		) -> ExecutionManager<DefaultHandler<R, E>> {
+		pub fn get_manager<E: fmt::Debug>(self) -> ExecutionManager<DefaultHandler<E>> {
 			match self {
 				ExecutionStrategy::AlwaysWasm =>
 					ExecutionManager::AlwaysWasm(BackendTrustLevel::Trusted),
@@ -267,19 +260,19 @@ mod execution {
 	}
 
 	/// Evaluate to ExecutionManager::NativeElseWasm, without having to figure out the type.
-	pub fn native_else_wasm<E, R: Decode>() -> ExecutionManager<DefaultHandler<R, E>> {
+	pub fn native_else_wasm<E>() -> ExecutionManager<DefaultHandler<E>> {
 		ExecutionManager::NativeElseWasm
 	}
 
 	/// Evaluate to ExecutionManager::AlwaysWasm with trusted backend, without having to figure out
 	/// the type.
-	fn always_wasm<E, R: Decode>() -> ExecutionManager<DefaultHandler<R, E>> {
+	fn always_wasm<E>() -> ExecutionManager<DefaultHandler<E>> {
 		ExecutionManager::AlwaysWasm(BackendTrustLevel::Trusted)
 	}
 
 	/// Evaluate ExecutionManager::AlwaysWasm with untrusted backend, without having to figure out
 	/// the type.
-	fn always_untrusted_wasm<E, R: Decode>() -> ExecutionManager<DefaultHandler<R, E>> {
+	fn always_untrusted_wasm<E>() -> ExecutionManager<DefaultHandler<E>> {
 		ExecutionManager::AlwaysWasm(BackendTrustLevel::Untrusted)
 	}
 
@@ -381,23 +374,10 @@ mod execution {
 		pub fn execute(&mut self, strategy: ExecutionStrategy) -> Result<Vec<u8>, Box<dyn Error>> {
 			// We are not giving a native call and thus we are sure that the result can never be a
 			// native value.
-			self.execute_using_consensus_failure_handler::<_, NeverNativeValue, fn() -> _>(
-				strategy.get_manager(),
-				None,
-			)
-			.map(NativeOrEncoded::into_encoded)
+			self.execute_using_consensus_failure_handler(strategy.get_manager())
 		}
 
-		fn execute_aux<R, NC>(
-			&mut self,
-			use_native: bool,
-			native_call: Option<NC>,
-		) -> (CallResult<R, Exec::Error>, bool)
-		where
-			R: Decode + Encode + PartialEq,
-			NC: FnOnce() -> result::Result<R, Box<dyn std::error::Error + Send + Sync>>
-				+ UnwindSafe,
-		{
+		fn execute_aux(&mut self, use_native: bool) -> (CallResult<Exec::Error>, bool) {
 			let mut cache = StorageTransactionCache::default();
 
 			let cache = match self.storage_transaction_cache.as_mut() {
@@ -428,7 +408,6 @@ mod execution {
 				self.method,
 				self.call_data,
 				use_native,
-				native_call,
 			);
 
 			self.overlay
@@ -446,26 +425,20 @@ mod execution {
 			(result, was_native)
 		}
 
-		fn execute_call_with_both_strategy<Handler, R, NC>(
+		fn execute_call_with_both_strategy<Handler>(
 			&mut self,
-			mut native_call: Option<NC>,
 			on_consensus_failure: Handler,
-		) -> CallResult<R, Exec::Error>
+		) -> CallResult<Exec::Error>
 		where
-			R: Decode + Encode + PartialEq,
-			NC: FnOnce() -> result::Result<R, Box<dyn std::error::Error + Send + Sync>>
-				+ UnwindSafe,
-			Handler: FnOnce(
-				CallResult<R, Exec::Error>,
-				CallResult<R, Exec::Error>,
-			) -> CallResult<R, Exec::Error>,
+			Handler:
+				FnOnce(CallResult<Exec::Error>, CallResult<Exec::Error>) -> CallResult<Exec::Error>,
 		{
 			self.overlay.start_transaction();
-			let (result, was_native) = self.execute_aux(true, native_call.take());
+			let (result, was_native) = self.execute_aux(true);
 
 			if was_native {
 				self.overlay.rollback_transaction().expect(PROOF_CLOSE_TRANSACTION);
-				let (wasm_result, _) = self.execute_aux(false, native_call);
+				let (wasm_result, _) = self.execute_aux(false);
 
 				if (result.is_ok() &&
 					wasm_result.is_ok() && result.as_ref().ok() == wasm_result.as_ref().ok()) ||
@@ -481,25 +454,16 @@ mod execution {
 			}
 		}
 
-		fn execute_call_with_native_else_wasm_strategy<R, NC>(
-			&mut self,
-			mut native_call: Option<NC>,
-		) -> CallResult<R, Exec::Error>
-		where
-			R: Decode + Encode + PartialEq,
-			NC: FnOnce() -> result::Result<R, Box<dyn std::error::Error + Send + Sync>>
-				+ UnwindSafe,
-		{
+		fn execute_call_with_native_else_wasm_strategy(&mut self) -> CallResult<Exec::Error> {
 			self.overlay.start_transaction();
-			let (result, was_native) = self.execute_aux(true, native_call.take());
+			let (result, was_native) = self.execute_aux(true);
 
 			if !was_native || result.is_ok() {
 				self.overlay.commit_transaction().expect(PROOF_CLOSE_TRANSACTION);
 				result
 			} else {
 				self.overlay.rollback_transaction().expect(PROOF_CLOSE_TRANSACTION);
-				let (wasm_result, _) = self.execute_aux(false, native_call);
-				wasm_result
+				self.execute_aux(false).0
 			}
 		}
 
@@ -512,35 +476,29 @@ mod execution {
 		///
 		/// Returns the result of the executed function either in native representation `R` or
 		/// in SCALE encoded representation.
-		pub fn execute_using_consensus_failure_handler<Handler, R, NC>(
+		pub fn execute_using_consensus_failure_handler<Handler>(
 			&mut self,
 			manager: ExecutionManager<Handler>,
-			mut native_call: Option<NC>,
-		) -> Result<NativeOrEncoded<R>, Box<dyn Error>>
+		) -> Result<Vec<u8>, Box<dyn Error>>
 		where
-			R: Decode + Encode + PartialEq,
-			NC: FnOnce() -> result::Result<R, Box<dyn std::error::Error + Send + Sync>>
-				+ UnwindSafe,
-			Handler: FnOnce(
-				CallResult<R, Exec::Error>,
-				CallResult<R, Exec::Error>,
-			) -> CallResult<R, Exec::Error>,
+			Handler:
+				FnOnce(CallResult<Exec::Error>, CallResult<Exec::Error>) -> CallResult<Exec::Error>,
 		{
 			let result = {
 				match manager {
-					ExecutionManager::Both(on_consensus_failure) => self
-						.execute_call_with_both_strategy(native_call.take(), on_consensus_failure),
+					ExecutionManager::Both(on_consensus_failure) =>
+						self.execute_call_with_both_strategy(on_consensus_failure),
 					ExecutionManager::NativeElseWasm =>
-						self.execute_call_with_native_else_wasm_strategy(native_call.take()),
+						self.execute_call_with_native_else_wasm_strategy(),
 					ExecutionManager::AlwaysWasm(trust_level) => {
 						let _abort_guard = match trust_level {
 							BackendTrustLevel::Trusted => None,
 							BackendTrustLevel::Untrusted =>
 								Some(sp_panic_handler::AbortGuard::never_abort()),
 						};
-						self.execute_aux(false, native_call).0
+						self.execute_aux(false).0
 					},
-					ExecutionManager::NativeWhenPossible => self.execute_aux(true, native_call).0,
+					ExecutionManager::NativeWhenPossible => self.execute_aux(true).0,
 				}
 			};
 
@@ -559,15 +517,13 @@ mod execution {
 		runtime_code: &RuntimeCode,
 	) -> Result<(Vec<u8>, StorageProof), Box<dyn Error>>
 	where
-		B: Backend<H>,
+		B: AsTrieBackend<H>,
 		H: Hasher,
 		H::Out: Ord + 'static + codec::Codec,
 		Exec: CodeExecutor + Clone + 'static,
 		Spawn: SpawnNamed + Send + 'static,
 	{
-		let trie_backend = backend
-			.as_trie_backend()
-			.ok_or_else(|| Box::new(ExecutionError::UnableToGenerateProof) as Box<dyn Error>)?;
+		let trie_backend = backend.as_trie_backend();
 		prove_execution_on_trie_backend::<_, _, _, _>(
 			trie_backend,
 			overlay,
@@ -604,8 +560,10 @@ mod execution {
 		Exec: CodeExecutor + 'static + Clone,
 		Spawn: SpawnNamed + Send + 'static,
 	{
-		let proving_backend = proving_backend::ProvingBackend::new(trie_backend);
-		let mut sm = StateMachine::<_, H, Exec>::new(
+		let proving_backend =
+			TrieBackendBuilder::wrap(trie_backend).with_recorder(Default::default()).build();
+
+		let result = StateMachine::<_, H, Exec>::new(
 			&proving_backend,
 			overlay,
 			exec,
@@ -614,14 +572,14 @@ mod execution {
 			Extensions::default(),
 			runtime_code,
 			spawn_handle,
-		);
+		)
+		.execute_using_consensus_failure_handler::<_>(always_wasm())?;
 
-		let result = sm.execute_using_consensus_failure_handler::<_, NeverNativeValue, fn() -> _>(
-			always_wasm(),
-			None,
-		)?;
-		let proof = sm.backend.extract_proof();
-		Ok((result.into_encoded(), proof))
+		let proof = proving_backend
+			.extract_proof()
+			.expect("A recorder was set and thus, a storage proof can be extracted; qed");
+
+		Ok((result, proof))
 	}
 
 	/// Check execution proof, generated by `prove_execution` call.
@@ -636,12 +594,12 @@ mod execution {
 		runtime_code: &RuntimeCode,
 	) -> Result<Vec<u8>, Box<dyn Error>>
 	where
-		H: Hasher,
+		H: Hasher + 'static,
 		Exec: CodeExecutor + Clone + 'static,
 		H::Out: Ord + 'static + codec::Codec,
 		Spawn: SpawnNamed + Send + 'static,
 	{
-		let trie_backend = create_proof_check_backend::<H>(root.into(), proof)?;
+		let trie_backend = create_proof_check_backend::<H>(root, proof)?;
 		execution_proof_check_on_trie_backend::<_, _, _>(
 			&trie_backend,
 			overlay,
@@ -669,7 +627,7 @@ mod execution {
 		Exec: CodeExecutor + Clone + 'static,
 		Spawn: SpawnNamed + Send + 'static,
 	{
-		let mut sm = StateMachine::<_, H, Exec>::new(
+		StateMachine::<_, H, Exec>::new(
 			trie_backend,
 			overlay,
 			exec,
@@ -678,27 +636,20 @@ mod execution {
 			Extensions::default(),
 			runtime_code,
 			spawn_handle,
-		);
-
-		sm.execute_using_consensus_failure_handler::<_, NeverNativeValue, fn() -> _>(
-			always_untrusted_wasm(),
-			None,
 		)
-		.map(NativeOrEncoded::into_encoded)
+		.execute_using_consensus_failure_handler(always_untrusted_wasm())
 	}
 
 	/// Generate storage read proof.
 	pub fn prove_read<B, H, I>(backend: B, keys: I) -> Result<StorageProof, Box<dyn Error>>
 	where
-		B: Backend<H>,
+		B: AsTrieBackend<H>,
 		H: Hasher,
 		H::Out: Ord + Codec,
 		I: IntoIterator,
 		I::Item: AsRef<[u8]>,
 	{
-		let trie_backend = backend
-			.as_trie_backend()
-			.ok_or_else(|| Box::new(ExecutionError::UnableToGenerateProof) as Box<dyn Error>)?;
+		let trie_backend = backend.as_trie_backend();
 		prove_read_on_trie_backend(trie_backend, keys)
 	}
 
@@ -788,7 +739,7 @@ mod execution {
 						self.0.last().and_then(|s| s.key_values.last().map(|kv| kv.0.clone()));
 
 					if let Some(child_last) = child_last {
-						if last.len() == 0 {
+						if last.is_empty() {
 							if let Some(top_last) = top_last {
 								last.push(top_last)
 							} else {
@@ -826,13 +777,11 @@ mod execution {
 		start_at: &[Vec<u8>],
 	) -> Result<(StorageProof, u32), Box<dyn Error>>
 	where
-		B: Backend<H>,
+		B: AsTrieBackend<H>,
 		H: Hasher,
 		H::Out: Ord + Codec,
 	{
-		let trie_backend = backend
-			.as_trie_backend()
-			.ok_or_else(|| Box::new(ExecutionError::UnableToGenerateProof) as Box<dyn Error>)?;
+		let trie_backend = backend.as_trie_backend();
 		prove_range_read_with_child_with_size_on_trie_backend(trie_backend, size_limit, start_at)
 	}
 
@@ -853,7 +802,9 @@ mod execution {
 			return Err(Box::new("Invalid start of range."))
 		}
 
-		let proving_backend = proving_backend::ProvingBackend::<S, H>::new(trie_backend);
+		let recorder = sp_trie::recorder::Recorder::default();
+		let proving_backend =
+			TrieBackendBuilder::wrap(trie_backend).with_recorder(recorder.clone()).build();
 		let mut count = 0;
 
 		let mut child_roots = HashSet::new();
@@ -863,7 +814,7 @@ mod execution {
 				.storage(&storage_key)
 				.map_err(|e| Box::new(e) as Box<dyn Error>)?
 			{
-				child_roots.insert(state_root.clone());
+				child_roots.insert(state_root);
 			} else {
 				return Err(Box::new("Invalid range start child trie key."))
 			}
@@ -877,7 +828,7 @@ mod execution {
 			let (child_info, depth) = if let Some(storage_key) = child_key.as_ref() {
 				let storage_key = PrefixedStorageKey::new_ref(storage_key);
 				(
-					Some(match ChildType::from_prefixed_key(&storage_key) {
+					Some(match ChildType::from_prefixed_key(storage_key) {
 						Some((ChildType::ParentKeyId, storage_key)) =>
 							ChildInfo::new_default(storage_key),
 						None => return Err(Box::new("Invalid range start child trie key.")),
@@ -897,15 +848,15 @@ mod execution {
 					None,
 					start_at_ref,
 					|key, value| {
-						if first {
-							if start_at_ref
+						if first &&
+							start_at_ref
 								.as_ref()
 								.map(|start| &key.as_slice() > start)
 								.unwrap_or(true)
-							{
-								first = false;
-							}
+						{
+							first = false;
 						}
+
 						if first {
 							true
 						} else if depth < MAX_NESTED_TRIE_DEPTH &&
@@ -921,7 +872,7 @@ mod execution {
 								// do not add two child trie with same root
 								true
 							}
-						} else if proving_backend.estimate_encoded_size() <= size_limit {
+						} else if recorder.estimate_encoded_size() <= size_limit {
 							count += 1;
 							true
 						} else {
@@ -935,19 +886,21 @@ mod execution {
 			if switch_child_key.is_none() {
 				if depth == 1 {
 					break
+				} else if completed {
+					start_at = child_key.take();
 				} else {
-					if completed {
-						start_at = child_key.take();
-					} else {
-						break
-					}
+					break
 				}
 			} else {
 				child_key = switch_child_key;
 				start_at = None;
 			}
 		}
-		Ok((proving_backend.extract_proof(), count))
+
+		let proof = proving_backend
+			.extract_proof()
+			.expect("A recorder was set and thus, a storage proof can be extracted; qed");
+		Ok((proof, count))
 	}
 
 	/// Generate range storage read proof.
@@ -959,13 +912,11 @@ mod execution {
 		start_at: Option<&[u8]>,
 	) -> Result<(StorageProof, u32), Box<dyn Error>>
 	where
-		B: Backend<H>,
+		B: AsTrieBackend<H>,
 		H: Hasher,
 		H::Out: Ord + Codec,
 	{
-		let trie_backend = backend
-			.as_trie_backend()
-			.ok_or_else(|| Box::new(ExecutionError::UnableToGenerateProof) as Box<dyn Error>)?;
+		let trie_backend = backend.as_trie_backend();
 		prove_range_read_with_size_on_trie_backend(
 			trie_backend,
 			child_info,
@@ -988,7 +939,9 @@ mod execution {
 		H: Hasher,
 		H::Out: Ord + Codec,
 	{
-		let proving_backend = proving_backend::ProvingBackend::<S, H>::new(trie_backend);
+		let recorder = sp_trie::recorder::Recorder::default();
+		let proving_backend =
+			TrieBackendBuilder::wrap(trie_backend).with_recorder(recorder.clone()).build();
 		let mut count = 0;
 		proving_backend
 			.apply_to_key_values_while(
@@ -996,7 +949,7 @@ mod execution {
 				prefix,
 				start_at,
 				|_key, _value| {
-					if count == 0 || proving_backend.estimate_encoded_size() <= size_limit {
+					if count == 0 || recorder.estimate_encoded_size() <= size_limit {
 						count += 1;
 						true
 					} else {
@@ -1006,7 +959,11 @@ mod execution {
 				false,
 			)
 			.map_err(|e| Box::new(e) as Box<dyn Error>)?;
-		Ok((proving_backend.extract_proof(), count))
+
+		let proof = proving_backend
+			.extract_proof()
+			.expect("A recorder was set and thus, a storage proof can be extracted; qed");
+		Ok((proof, count))
 	}
 
 	/// Generate child storage read proof.
@@ -1016,15 +973,13 @@ mod execution {
 		keys: I,
 	) -> Result<StorageProof, Box<dyn Error>>
 	where
-		B: Backend<H>,
+		B: AsTrieBackend<H>,
 		H: Hasher,
 		H::Out: Ord + Codec,
 		I: IntoIterator,
 		I::Item: AsRef<[u8]>,
 	{
-		let trie_backend = backend
-			.as_trie_backend()
-			.ok_or_else(|| Box::new(ExecutionError::UnableToGenerateProof) as Box<dyn Error>)?;
+		let trie_backend = backend.as_trie_backend();
 		prove_child_read_on_trie_backend(trie_backend, child_info, keys)
 	}
 
@@ -1040,13 +995,17 @@ mod execution {
 		I: IntoIterator,
 		I::Item: AsRef<[u8]>,
 	{
-		let proving_backend = proving_backend::ProvingBackend::<_, H>::new(trie_backend);
+		let proving_backend =
+			TrieBackendBuilder::wrap(trie_backend).with_recorder(Default::default()).build();
 		for key in keys.into_iter() {
 			proving_backend
 				.storage(key.as_ref())
 				.map_err(|e| Box::new(e) as Box<dyn Error>)?;
 		}
-		Ok(proving_backend.extract_proof())
+
+		Ok(proving_backend
+			.extract_proof()
+			.expect("A recorder was set and thus, a storage proof can be extracted; qed"))
 	}
 
 	/// Generate storage read proof on pre-created trie backend.
@@ -1062,13 +1021,17 @@ mod execution {
 		I: IntoIterator,
 		I::Item: AsRef<[u8]>,
 	{
-		let proving_backend = proving_backend::ProvingBackend::<_, H>::new(trie_backend);
+		let proving_backend =
+			TrieBackendBuilder::wrap(trie_backend).with_recorder(Default::default()).build();
 		for key in keys.into_iter() {
 			proving_backend
 				.child_storage(child_info, key.as_ref())
 				.map_err(|e| Box::new(e) as Box<dyn Error>)?;
 		}
-		Ok(proving_backend.extract_proof())
+
+		Ok(proving_backend
+			.extract_proof()
+			.expect("A recorder was set and thus, a storage proof can be extracted; qed"))
 	}
 
 	/// Check storage read proof, generated by `prove_read` call.
@@ -1078,7 +1041,7 @@ mod execution {
 		keys: I,
 	) -> Result<HashMap<Vec<u8>, Option<Vec<u8>>>, Box<dyn Error>>
 	where
-		H: Hasher,
+		H: Hasher + 'static,
 		H::Out: Ord + Codec,
 		I: IntoIterator,
 		I::Item: AsRef<[u8]>,
@@ -1103,7 +1066,7 @@ mod execution {
 		start_at: &[Vec<u8>],
 	) -> Result<(KeyValueStates, usize), Box<dyn Error>>
 	where
-		H: Hasher,
+		H: Hasher + 'static,
 		H::Out: Ord + Codec,
 	{
 		let proving_backend = create_proof_check_backend::<H>(root, proof)?;
@@ -1120,7 +1083,7 @@ mod execution {
 		start_at: Option<&[u8]>,
 	) -> Result<(Vec<(Vec<u8>, Vec<u8>)>, bool), Box<dyn Error>>
 	where
-		H: Hasher,
+		H: Hasher + 'static,
 		H::Out: Ord + Codec,
 	{
 		let proving_backend = create_proof_check_backend::<H>(root, proof)?;
@@ -1141,7 +1104,7 @@ mod execution {
 		keys: I,
 	) -> Result<HashMap<Vec<u8>, Option<Vec<u8>>>, Box<dyn Error>>
 	where
-		H: Hasher,
+		H: Hasher + 'static,
 		H::Out: Ord + Codec,
 		I: IntoIterator,
 		I::Item: AsRef<[u8]>,
@@ -1266,7 +1229,7 @@ mod execution {
 
 				let storage_key = PrefixedStorageKey::new_ref(storage_key);
 				(
-					Some(match ChildType::from_prefixed_key(&storage_key) {
+					Some(match ChildType::from_prefixed_key(storage_key) {
 						Some((ChildType::ParentKeyId, storage_key)) =>
 							ChildInfo::new_default(storage_key),
 						None => return Err(Box::new("Invalid range start child trie key.")),
@@ -1291,15 +1254,15 @@ mod execution {
 					None,
 					start_at_ref,
 					|key, value| {
-						if first {
-							if start_at_ref
+						if first &&
+							start_at_ref
 								.as_ref()
 								.map(|start| &key.as_slice() > start)
 								.unwrap_or(true)
-							{
-								first = false;
-							}
+						{
+							first = false;
 						}
+
 						if !first {
 							values.push((key.to_vec(), value.to_vec()));
 						}
@@ -1345,22 +1308,19 @@ mod execution {
 
 #[cfg(test)]
 mod tests {
-	use super::{ext::Ext, *};
-	use crate::execution::CallResult;
-	use codec::{Decode, Encode};
+	use super::{backend::AsTrieBackend, ext::Ext, *};
+	use crate::{execution::CallResult, in_memory_backend::new_in_mem_hash_key};
+	use assert_matches::assert_matches;
+	use codec::Encode;
 	use sp_core::{
 		map,
-		storage::ChildInfo,
+		storage::{ChildInfo, StateVersion},
 		testing::TaskExecutor,
 		traits::{CodeExecutor, Externalities, RuntimeCode},
-		NativeOrEncoded, NeverNativeValue,
 	};
 	use sp_runtime::traits::BlakeTwo256;
-	use std::{
-		collections::{BTreeMap, HashMap},
-		panic::UnwindSafe,
-		result,
-	};
+	use sp_trie::trie_types::{TrieDBMutBuilderV0, TrieDBMutBuilderV1};
+	use std::collections::{BTreeMap, HashMap};
 
 	#[derive(Clone)]
 	struct DummyCodeExecutor {
@@ -1372,28 +1332,20 @@ mod tests {
 	impl CodeExecutor for DummyCodeExecutor {
 		type Error = u8;
 
-		fn call<
-			R: Encode + Decode + PartialEq,
-			NC: FnOnce() -> result::Result<R, Box<dyn std::error::Error + Send + Sync>> + UnwindSafe,
-		>(
+		fn call(
 			&self,
 			ext: &mut dyn Externalities,
 			_: &RuntimeCode,
 			_method: &str,
 			_data: &[u8],
 			use_native: bool,
-			native_call: Option<NC>,
-		) -> (CallResult<R, Self::Error>, bool) {
+		) -> (CallResult<Self::Error>, bool) {
 			let using_native = use_native && self.native_available;
-			match (using_native, self.native_succeeds, self.fallback_succeeds, native_call) {
-				(true, true, _, Some(call)) => {
-					let res = sp_externalities::set_and_run_with_externalities(ext, || call());
-					(res.map(NativeOrEncoded::Native).map_err(|_| 0), true)
-				},
-				(true, true, _, None) | (false, _, true, None) => (
-					Ok(NativeOrEncoded::Encoded(vec![
+			match (using_native, self.native_succeeds, self.fallback_succeeds) {
+				(true, true, _) | (false, _, true) => (
+					Ok(vec![
 						ext.storage(b"value1").unwrap()[0] + ext.storage(b"value2").unwrap()[0],
-					])),
+					]),
 					using_native,
 				),
 				_ => (Err(0), using_native),
@@ -1413,7 +1365,11 @@ mod tests {
 
 	#[test]
 	fn execute_works() {
-		let backend = trie_backend::tests::test_trie();
+		execute_works_inner(StateVersion::V0);
+		execute_works_inner(StateVersion::V1);
+	}
+	fn execute_works_inner(state_version: StateVersion) {
+		let backend = trie_backend::tests::test_trie(state_version, None, None);
 		let mut overlayed_changes = Default::default();
 		let wasm_code = RuntimeCode::empty();
 
@@ -1437,7 +1393,11 @@ mod tests {
 
 	#[test]
 	fn execute_works_with_native_else_wasm() {
-		let backend = trie_backend::tests::test_trie();
+		execute_works_with_native_else_wasm_inner(StateVersion::V0);
+		execute_works_with_native_else_wasm_inner(StateVersion::V1);
+	}
+	fn execute_works_with_native_else_wasm_inner(state_version: StateVersion) {
+		let backend = trie_backend::tests::test_trie(state_version, None, None);
 		let mut overlayed_changes = Default::default();
 		let wasm_code = RuntimeCode::empty();
 
@@ -1461,8 +1421,12 @@ mod tests {
 
 	#[test]
 	fn dual_execution_strategy_detects_consensus_failure() {
+		dual_execution_strategy_detects_consensus_failure_inner(StateVersion::V0);
+		dual_execution_strategy_detects_consensus_failure_inner(StateVersion::V1);
+	}
+	fn dual_execution_strategy_detects_consensus_failure_inner(state_version: StateVersion) {
 		let mut consensus_failed = false;
-		let backend = trie_backend::tests::test_trie();
+		let backend = trie_backend::tests::test_trie(state_version, None, None);
 		let mut overlayed_changes = Default::default();
 		let wasm_code = RuntimeCode::empty();
 
@@ -1482,19 +1446,20 @@ mod tests {
 		);
 
 		assert!(state_machine
-			.execute_using_consensus_failure_handler::<_, NeverNativeValue, fn() -> _>(
-				ExecutionManager::Both(|we, _ne| {
-					consensus_failed = true;
-					we
-				}),
-				None,
-			)
+			.execute_using_consensus_failure_handler(ExecutionManager::Both(|we, _ne| {
+				consensus_failed = true;
+				we
+			}),)
 			.is_err());
 		assert!(consensus_failed);
 	}
 
 	#[test]
 	fn prove_execution_and_proof_check_works() {
+		prove_execution_and_proof_check_works_inner(StateVersion::V0);
+		prove_execution_and_proof_check_works_inner(StateVersion::V1);
+	}
+	fn prove_execution_and_proof_check_works_inner(state_version: StateVersion) {
 		let executor = DummyCodeExecutor {
 			native_available: true,
 			native_succeeds: true,
@@ -1502,8 +1467,8 @@ mod tests {
 		};
 
 		// fetch execution proof from 'remote' full node
-		let mut remote_backend = trie_backend::tests::test_trie();
-		let remote_root = remote_backend.storage_root(std::iter::empty()).0;
+		let mut remote_backend = trie_backend::tests::test_trie(state_version, None, None);
+		let remote_root = remote_backend.storage_root(std::iter::empty(), state_version).0;
 		let (remote_result, remote_proof) = prove_execution(
 			&mut remote_backend,
 			&mut Default::default(),
@@ -1541,8 +1506,8 @@ mod tests {
 			b"abc".to_vec() => b"2".to_vec(),
 			b"bbb".to_vec() => b"3".to_vec()
 		];
-		let state = InMemoryBackend::<BlakeTwo256>::from(initial);
-		let backend = state.as_trie_backend().unwrap();
+		let state = InMemoryBackend::<BlakeTwo256>::from((initial, StateVersion::default()));
+		let backend = state.as_trie_backend();
 
 		let mut overlay = OverlayedChanges::default();
 		overlay.set_storage(b"aba".to_vec(), Some(b"1312".to_vec()));
@@ -1555,7 +1520,7 @@ mod tests {
 		{
 			let mut cache = StorageTransactionCache::default();
 			let mut ext = Ext::new(&mut overlay, &mut cache, backend, None);
-			ext.clear_prefix(b"ab", None);
+			let _ = ext.clear_prefix(b"ab", None, None);
 		}
 		overlay.commit_transaction().unwrap();
 
@@ -1565,13 +1530,13 @@ mod tests {
 				.map(|(k, v)| (k.clone(), v.value().cloned()))
 				.collect::<HashMap<_, _>>(),
 			map![
-				b"abc".to_vec() => None.into(),
-				b"abb".to_vec() => None.into(),
-				b"aba".to_vec() => None.into(),
-				b"abd".to_vec() => None.into(),
+				b"abc".to_vec() => None,
+				b"abb".to_vec() => None,
+				b"aba".to_vec() => None,
+				b"abd".to_vec() => None,
 
-				b"bab".to_vec() => Some(b"228".to_vec()).into(),
-				b"bbd".to_vec() => Some(b"42".to_vec()).into()
+				b"bab".to_vec() => Some(b"228".to_vec()),
+				b"bbd".to_vec() => Some(b"42".to_vec())
 			],
 		);
 
@@ -1579,7 +1544,10 @@ mod tests {
 		{
 			let mut cache = StorageTransactionCache::default();
 			let mut ext = Ext::new(&mut overlay, &mut cache, backend, None);
-			assert_eq!((false, 1), ext.clear_prefix(b"ab", Some(1)));
+			assert_matches!(
+				ext.clear_prefix(b"ab", Some(1), None).deconstruct(),
+				(Some(_), 1, 3, 1)
+			);
 		}
 		overlay.commit_transaction().unwrap();
 
@@ -1589,12 +1557,12 @@ mod tests {
 				.map(|(k, v)| (k.clone(), v.value().cloned()))
 				.collect::<HashMap<_, _>>(),
 			map![
-				b"abb".to_vec() => None.into(),
-				b"aba".to_vec() => None.into(),
-				b"abd".to_vec() => None.into(),
+				b"abb".to_vec() => None,
+				b"aba".to_vec() => None,
+				b"abd".to_vec() => None,
 
-				b"bab".to_vec() => Some(b"228".to_vec()).into(),
-				b"bbd".to_vec() => Some(b"42".to_vec()).into()
+				b"bab".to_vec() => Some(b"228".to_vec()),
+				b"bbd".to_vec() => Some(b"42".to_vec())
 			],
 		);
 	}
@@ -1610,7 +1578,7 @@ mod tests {
 				b"d".to_vec() => b"3".to_vec()
 			],
 		];
-		let backend = InMemoryBackend::<BlakeTwo256>::from(initial);
+		let backend = InMemoryBackend::<BlakeTwo256>::from((initial, StateVersion::default()));
 
 		let mut overlay = OverlayedChanges::default();
 		overlay.set_child_storage(&child_info, b"1".to_vec(), Some(b"1312".to_vec()));
@@ -1621,22 +1589,23 @@ mod tests {
 		{
 			let mut cache = StorageTransactionCache::default();
 			let mut ext = Ext::new(&mut overlay, &mut cache, &backend, None);
-			assert_eq!(ext.kill_child_storage(&child_info, Some(2)), (false, 2));
+			let r = ext.kill_child_storage(&child_info, Some(2), None);
+			assert_matches!(r.deconstruct(), (Some(_), 2, 6, 2));
 		}
 
 		assert_eq!(
 			overlay
 				.children()
 				.flat_map(|(iter, _child_info)| iter)
-				.map(|(k, v)| (k.clone(), v.value().clone()))
+				.map(|(k, v)| (k.clone(), v.value()))
 				.collect::<BTreeMap<_, _>>(),
 			map![
-				b"1".to_vec() => None.into(),
-				b"2".to_vec() => None.into(),
-				b"3".to_vec() => None.into(),
-				b"4".to_vec() => None.into(),
-				b"a".to_vec() => None.into(),
-				b"b".to_vec() => None.into(),
+				b"1".to_vec() => None,
+				b"2".to_vec() => None,
+				b"3".to_vec() => None,
+				b"4".to_vec() => None,
+				b"a".to_vec() => None,
+				b"b".to_vec() => None,
 			],
 		);
 	}
@@ -1652,33 +1621,56 @@ mod tests {
 				b"d".to_vec() => b"3".to_vec()
 			],
 		];
-		let backend = InMemoryBackend::<BlakeTwo256>::from(initial);
+		let backend = InMemoryBackend::<BlakeTwo256>::from((initial, StateVersion::default()));
 		let mut overlay = OverlayedChanges::default();
 		let mut cache = StorageTransactionCache::default();
 		let mut ext = Ext::new(&mut overlay, &mut cache, &backend, None);
-		assert_eq!(ext.kill_child_storage(&child_info, Some(0)), (false, 0));
-		assert_eq!(ext.kill_child_storage(&child_info, Some(1)), (false, 1));
-		assert_eq!(ext.kill_child_storage(&child_info, Some(2)), (false, 2));
-		assert_eq!(ext.kill_child_storage(&child_info, Some(3)), (false, 3));
-		assert_eq!(ext.kill_child_storage(&child_info, Some(4)), (true, 4));
-		// Only 4 items to remove
-		assert_eq!(ext.kill_child_storage(&child_info, Some(5)), (true, 4));
-		assert_eq!(ext.kill_child_storage(&child_info, None), (true, 4));
+		let r = ext.kill_child_storage(&child_info, Some(0), None).deconstruct();
+		assert_matches!(r, (Some(_), 0, 0, 0));
+		let r = ext
+			.kill_child_storage(&child_info, Some(1), r.0.as_ref().map(|x| &x[..]))
+			.deconstruct();
+		assert_matches!(r, (Some(_), 1, 1, 1));
+		let r = ext
+			.kill_child_storage(&child_info, Some(4), r.0.as_ref().map(|x| &x[..]))
+			.deconstruct();
+		// Only 3 items remaining to remove
+		assert_matches!(r, (None, 3, 3, 3));
+		let r = ext.kill_child_storage(&child_info, Some(1), None).deconstruct();
+		assert_matches!(r, (Some(_), 0, 0, 1));
+	}
+
+	#[test]
+	fn limited_child_kill_off_by_one_works_without_limit() {
+		let child_info = ChildInfo::new_default(b"sub1");
+		let initial: HashMap<_, BTreeMap<_, _>> = map![
+			Some(child_info.clone()) => map![
+				b"a".to_vec() => b"0".to_vec(),
+				b"b".to_vec() => b"1".to_vec(),
+				b"c".to_vec() => b"2".to_vec(),
+				b"d".to_vec() => b"3".to_vec()
+			],
+		];
+		let backend = InMemoryBackend::<BlakeTwo256>::from((initial, StateVersion::default()));
+		let mut overlay = OverlayedChanges::default();
+		let mut cache = StorageTransactionCache::default();
+		let mut ext = Ext::new(&mut overlay, &mut cache, &backend, None);
+		assert_eq!(ext.kill_child_storage(&child_info, None, None).deconstruct(), (None, 4, 4, 4));
 	}
 
 	#[test]
 	fn set_child_storage_works() {
 		let child_info = ChildInfo::new_default(b"sub1");
 		let child_info = &child_info;
-		let state = new_in_mem::<BlakeTwo256>();
-		let backend = state.as_trie_backend().unwrap();
+		let state = new_in_mem_hash_key::<BlakeTwo256>();
+		let backend = state.as_trie_backend();
 		let mut overlay = OverlayedChanges::default();
 		let mut cache = StorageTransactionCache::default();
 		let mut ext = Ext::new(&mut overlay, &mut cache, backend, None);
 
 		ext.set_child_storage(child_info, b"abc".to_vec(), b"def".to_vec());
 		assert_eq!(ext.child_storage(child_info, b"abc"), Some(b"def".to_vec()));
-		ext.kill_child_storage(child_info, None);
+		let _ = ext.kill_child_storage(child_info, None, None);
 		assert_eq!(ext.child_storage(child_info, b"abc"), None);
 	}
 
@@ -1686,8 +1678,8 @@ mod tests {
 	fn append_storage_works() {
 		let reference_data = vec![b"data1".to_vec(), b"2".to_vec(), b"D3".to_vec(), b"d4".to_vec()];
 		let key = b"key".to_vec();
-		let state = new_in_mem::<BlakeTwo256>();
-		let backend = state.as_trie_backend().unwrap();
+		let state = new_in_mem_hash_key::<BlakeTwo256>();
+		let backend = state.as_trie_backend();
 		let mut overlay = OverlayedChanges::default();
 		let mut cache = StorageTransactionCache::default();
 		{
@@ -1723,8 +1715,8 @@ mod tests {
 
 		let key = b"events".to_vec();
 		let mut cache = StorageTransactionCache::default();
-		let state = new_in_mem::<BlakeTwo256>();
-		let backend = state.as_trie_backend().unwrap();
+		let state = new_in_mem_hash_key::<BlakeTwo256>();
+		let backend = state.as_trie_backend();
 		let mut overlay = OverlayedChanges::default();
 
 		// For example, block initialization with event.
@@ -1777,7 +1769,7 @@ mod tests {
 
 	fn test_compact(remote_proof: StorageProof, remote_root: &sp_core::H256) -> StorageProof {
 		let compact_remote_proof =
-			remote_proof.into_compact_proof::<BlakeTwo256>(remote_root.clone()).unwrap();
+			remote_proof.into_compact_proof::<BlakeTwo256>(*remote_root).unwrap();
 		compact_remote_proof
 			.to_storage_proof::<BlakeTwo256>(Some(remote_root))
 			.unwrap()
@@ -1786,13 +1778,17 @@ mod tests {
 
 	#[test]
 	fn prove_read_and_proof_check_works() {
+		prove_read_and_proof_check_works_inner(StateVersion::V0);
+		prove_read_and_proof_check_works_inner(StateVersion::V1);
+	}
+	fn prove_read_and_proof_check_works_inner(state_version: StateVersion) {
 		let child_info = ChildInfo::new_default(b"sub1");
 		let missing_child_info = ChildInfo::new_default(b"sub1sub2"); // key will include other child root to proof.
 		let child_info = &child_info;
 		let missing_child_info = &missing_child_info;
 		// fetch read proof from 'remote' full node
-		let remote_backend = trie_backend::tests::test_trie();
-		let remote_root = remote_backend.storage_root(std::iter::empty()).0;
+		let remote_backend = trie_backend::tests::test_trie(state_version, None, None);
+		let remote_root = remote_backend.storage_root(std::iter::empty(), state_version).0;
 		let remote_proof = prove_read(remote_backend, &[b"value2"]).unwrap();
 		let remote_proof = test_compact(remote_proof, &remote_root);
 		// check proof locally
@@ -1800,8 +1796,7 @@ mod tests {
 			read_proof_check::<BlakeTwo256, _>(remote_root, remote_proof.clone(), &[b"value2"])
 				.unwrap();
 		let local_result2 =
-			read_proof_check::<BlakeTwo256, _>(remote_root, remote_proof.clone(), &[&[0xff]])
-				.is_ok();
+			read_proof_check::<BlakeTwo256, _>(remote_root, remote_proof, &[&[0xff]]).is_ok();
 		// check that results are correct
 		assert_eq!(
 			local_result1.into_iter().collect::<Vec<_>>(),
@@ -1809,8 +1804,8 @@ mod tests {
 		);
 		assert_eq!(local_result2, false);
 		// on child trie
-		let remote_backend = trie_backend::tests::test_trie();
-		let remote_root = remote_backend.storage_root(std::iter::empty()).0;
+		let remote_backend = trie_backend::tests::test_trie(state_version, None, None);
+		let remote_root = remote_backend.storage_root(std::iter::empty(), state_version).0;
 		let remote_proof = prove_child_read(remote_backend, child_info, &[b"value3"]).unwrap();
 		let remote_proof = test_compact(remote_proof, &remote_root);
 		let local_result1 = read_child_proof_check::<BlakeTwo256, _>(
@@ -1829,7 +1824,7 @@ mod tests {
 		.unwrap();
 		let local_result3 = read_child_proof_check::<BlakeTwo256, _>(
 			remote_root,
-			remote_proof.clone(),
+			remote_proof,
 			missing_child_info,
 			&[b"dummy"],
 		)
@@ -1874,9 +1869,10 @@ mod tests {
 				storage.insert(Some(child_info), items);
 			}
 
-			let trie: InMemoryBackend<BlakeTwo256> = storage.clone().into();
-			let trie_root = trie.root().clone();
-			let backend = crate::ProvingBackend::new(&trie);
+			let trie: InMemoryBackend<BlakeTwo256> =
+				(storage.clone(), StateVersion::default()).into();
+			let trie_root = *trie.root();
+			let backend = TrieBackendBuilder::wrap(&trie).with_recorder(Default::default()).build();
 			let mut queries = Vec::new();
 			for c in 0..(5 + nb_child_trie / 2) {
 				// random existing query
@@ -1921,7 +1917,7 @@ mod tests {
 				}
 			}
 
-			let storage_proof = backend.extract_proof();
+			let storage_proof = backend.extract_proof().expect("Failed to extract proof");
 			let remote_proof = test_compact(storage_proof, &trie_root);
 			let proof_check =
 				create_proof_check_backend::<BlakeTwo256>(trie_root, remote_proof).unwrap();
@@ -1937,15 +1933,16 @@ mod tests {
 
 	#[test]
 	fn prove_read_with_size_limit_works() {
-		let remote_backend = trie_backend::tests::test_trie();
-		let remote_root = remote_backend.storage_root(::std::iter::empty()).0;
+		let state_version = StateVersion::V0;
+		let remote_backend = trie_backend::tests::test_trie(state_version, None, None);
+		let remote_root = remote_backend.storage_root(::std::iter::empty(), state_version).0;
 		let (proof, count) =
 			prove_range_read_with_size(remote_backend, None, None, 0, None).unwrap();
 		// Always contains at least some nodes.
 		assert_eq!(proof.into_memory_db::<BlakeTwo256>().drain().len(), 3);
 		assert_eq!(count, 1);
 
-		let remote_backend = trie_backend::tests::test_trie();
+		let remote_backend = trie_backend::tests::test_trie(state_version, None, None);
 		let (proof, count) =
 			prove_range_read_with_size(remote_backend, None, None, 800, Some(&[])).unwrap();
 		assert_eq!(proof.clone().into_memory_db::<BlakeTwo256>().drain().len(), 9);
@@ -1968,30 +1965,80 @@ mod tests {
 		assert_eq!(results.len() as u32, 101);
 		assert_eq!(completed, false);
 
-		let remote_backend = trie_backend::tests::test_trie();
+		let remote_backend = trie_backend::tests::test_trie(state_version, None, None);
 		let (proof, count) =
 			prove_range_read_with_size(remote_backend, None, None, 50000, Some(&[])).unwrap();
 		assert_eq!(proof.clone().into_memory_db::<BlakeTwo256>().drain().len(), 11);
 		assert_eq!(count, 132);
-		let (results, completed) = read_range_proof_check::<BlakeTwo256>(
-			remote_root,
-			proof.clone(),
-			None,
-			None,
-			None,
-			None,
-		)
-		.unwrap();
+		let (results, completed) =
+			read_range_proof_check::<BlakeTwo256>(remote_root, proof, None, None, None, None)
+				.unwrap();
 		assert_eq!(results.len() as u32, count);
 		assert_eq!(completed, true);
 	}
 
 	#[test]
+	fn inner_state_versioning_switch_proofs() {
+		let mut state_version = StateVersion::V0;
+		let (mut mdb, mut root) = trie_backend::tests::test_db(state_version);
+		{
+			let mut trie = TrieDBMutBuilderV0::from_existing(&mut mdb, &mut root).build();
+			trie.insert(b"foo", vec![1u8; 1_000].as_slice()) // big inner hash
+				.expect("insert failed");
+			trie.insert(b"foo2", vec![3u8; 16].as_slice()) // no inner hash
+				.expect("insert failed");
+			trie.insert(b"foo222", vec![5u8; 100].as_slice()) // inner hash
+				.expect("insert failed");
+		}
+
+		let check_proof = |mdb, root, state_version| -> StorageProof {
+			let remote_backend = TrieBackendBuilder::new(mdb, root).build();
+			let remote_root = remote_backend.storage_root(std::iter::empty(), state_version).0;
+			let remote_proof = prove_read(remote_backend, &[b"foo222"]).unwrap();
+			// check proof locally
+			let local_result1 =
+				read_proof_check::<BlakeTwo256, _>(remote_root, remote_proof.clone(), &[b"foo222"])
+					.unwrap();
+			// check that results are correct
+			assert_eq!(
+				local_result1.into_iter().collect::<Vec<_>>(),
+				vec![(b"foo222".to_vec(), Some(vec![5u8; 100]))],
+			);
+			remote_proof
+		};
+
+		let remote_proof = check_proof(mdb.clone(), root, state_version);
+		// check full values in proof
+		assert!(remote_proof.encode().len() > 1_100);
+		assert!(remote_proof.encoded_size() > 1_100);
+		let root1 = root;
+
+		// do switch
+		state_version = StateVersion::V1;
+		{
+			let mut trie = TrieDBMutBuilderV1::from_existing(&mut mdb, &mut root).build();
+			trie.insert(b"foo222", vec![5u8; 100].as_slice()) // inner hash
+				.expect("insert failed");
+			// update with same value do change
+			trie.insert(b"foo", vec![1u8; 1000].as_slice()) // inner hash
+				.expect("insert failed");
+		}
+		let root3 = root;
+		assert!(root1 != root3);
+		let remote_proof = check_proof(mdb.clone(), root, state_version);
+		// nodes foo is replaced by its hashed value form.
+		assert!(remote_proof.encode().len() < 1000);
+		assert!(remote_proof.encoded_size() < 1000);
+		assert_eq!(remote_proof.encode().len(), remote_proof.encoded_size());
+	}
+
+	#[test]
 	fn prove_range_with_child_works() {
-		let remote_backend = trie_backend::tests::test_trie();
-		let remote_root = remote_backend.storage_root(::std::iter::empty()).0;
+		let state_version = StateVersion::V0;
+		let remote_backend = trie_backend::tests::test_trie(state_version, None, None);
+		let remote_root = remote_backend.storage_root(std::iter::empty(), state_version).0;
 		let mut start_at = smallvec::SmallVec::<[Vec<u8>; 2]>::new();
-		let trie_backend = remote_backend.as_trie_backend().unwrap();
+		let trie_backend = remote_backend.as_trie_backend();
 		let max_iter = 1000;
 		let mut nb_loop = 0;
 		loop {
@@ -2027,20 +2074,34 @@ mod tests {
 
 	#[test]
 	fn compact_multiple_child_trie() {
+		let size_no_inner_hash = compact_multiple_child_trie_inner(StateVersion::V0);
+		let size_inner_hash = compact_multiple_child_trie_inner(StateVersion::V1);
+		assert!(size_inner_hash < size_no_inner_hash);
+	}
+	fn compact_multiple_child_trie_inner(state_version: StateVersion) -> usize {
 		// this root will be queried
 		let child_info1 = ChildInfo::new_default(b"sub1");
 		// this root will not be include in proof
 		let child_info2 = ChildInfo::new_default(b"sub2");
 		// this root will be include in proof
 		let child_info3 = ChildInfo::new_default(b"sub");
-		let remote_backend = trie_backend::tests::test_trie();
+		let remote_backend = trie_backend::tests::test_trie(state_version, None, None);
+		let long_vec: Vec<u8> = (0..1024usize).map(|_| 8u8).collect();
 		let (remote_root, transaction) = remote_backend.full_storage_root(
 			std::iter::empty(),
 			vec![
 				(
 					&child_info1,
-					vec![(&b"key1"[..], Some(&b"val2"[..])), (&b"key2"[..], Some(&b"val3"[..]))]
-						.into_iter(),
+					vec![
+						// a inner hashable node
+						(&b"k"[..], Some(&long_vec[..])),
+						// need to ensure this is not an inline node
+						// otherwhise we do not know what is accessed when
+						// storing proof.
+						(&b"key1"[..], Some(&vec![5u8; 32][..])),
+						(&b"key2"[..], Some(&b"val3"[..])),
+					]
+					.into_iter(),
 				),
 				(
 					&child_info2,
@@ -2054,25 +2115,29 @@ mod tests {
 				),
 			]
 			.into_iter(),
+			state_version,
 		);
-		let mut remote_storage = remote_backend.into_storage();
+		let mut remote_storage = remote_backend.backend_storage().clone();
 		remote_storage.consolidate(transaction);
-		let remote_backend = TrieBackend::new(remote_storage, remote_root);
+		let remote_backend = TrieBackendBuilder::new(remote_storage, remote_root).build();
 		let remote_proof = prove_child_read(remote_backend, &child_info1, &[b"key1"]).unwrap();
+		let size = remote_proof.encoded_size();
 		let remote_proof = test_compact(remote_proof, &remote_root);
 		let local_result1 = read_child_proof_check::<BlakeTwo256, _>(
 			remote_root,
-			remote_proof.clone(),
+			remote_proof,
 			&child_info1,
 			&[b"key1"],
 		)
 		.unwrap();
 		assert_eq!(local_result1.len(), 1);
-		assert_eq!(local_result1.get(&b"key1"[..]), Some(&Some(b"val2".to_vec())));
+		assert_eq!(local_result1.get(&b"key1"[..]), Some(&Some(vec![5u8; 32])));
+		size
 	}
 
 	#[test]
 	fn child_storage_uuid() {
+		let state_version = StateVersion::V0;
 		let child_info_1 = ChildInfo::new_default(b"sub_test1");
 		let child_info_2 = ChildInfo::new_default(b"sub_test2");
 
@@ -2080,12 +2145,12 @@ mod tests {
 		let mut overlay = OverlayedChanges::default();
 
 		let mut transaction = {
-			let backend = test_trie();
+			let backend = test_trie(state_version, None, None);
 			let mut cache = StorageTransactionCache::default();
 			let mut ext = Ext::new(&mut overlay, &mut cache, &backend, None);
 			ext.set_child_storage(&child_info_1, b"abc".to_vec(), b"def".to_vec());
 			ext.set_child_storage(&child_info_2, b"abc".to_vec(), b"def".to_vec());
-			ext.storage_root();
+			ext.storage_root(state_version);
 			cache.transaction.unwrap()
 		};
 		let mut duplicate = false;
@@ -2105,8 +2170,8 @@ mod tests {
 			b"aaa".to_vec() => b"0".to_vec(),
 			b"bbb".to_vec() => b"".to_vec()
 		];
-		let state = InMemoryBackend::<BlakeTwo256>::from(initial);
-		let backend = state.as_trie_backend().unwrap();
+		let state = InMemoryBackend::<BlakeTwo256>::from((initial, StateVersion::default()));
+		let backend = state.as_trie_backend();
 
 		let mut overlay = OverlayedChanges::default();
 		overlay.start_transaction();
@@ -2127,51 +2192,5 @@ mod tests {
 		}
 		overlay.commit_transaction().unwrap();
 		assert_eq!(overlay.storage(b"ccc"), Some(None));
-	}
-
-	#[test]
-	fn runtime_registered_extensions_are_removed_after_execution() {
-		use sp_externalities::ExternalitiesExt;
-		sp_externalities::decl_extension! {
-			struct DummyExt(u32);
-		}
-
-		let backend = trie_backend::tests::test_trie();
-		let mut overlayed_changes = Default::default();
-		let wasm_code = RuntimeCode::empty();
-
-		let mut state_machine = StateMachine::new(
-			&backend,
-			&mut overlayed_changes,
-			&DummyCodeExecutor {
-				native_available: true,
-				native_succeeds: true,
-				fallback_succeeds: false,
-			},
-			"test",
-			&[],
-			Default::default(),
-			&wasm_code,
-			TaskExecutor::new(),
-		);
-
-		let run_state_machine = |state_machine: &mut StateMachine<_, _, _>| {
-			state_machine
-				.execute_using_consensus_failure_handler::<fn(_, _) -> _, _, _>(
-					ExecutionManager::NativeWhenPossible,
-					Some(|| {
-						sp_externalities::with_externalities(|mut ext| {
-							ext.register_extension(DummyExt(2)).unwrap();
-						})
-						.unwrap();
-
-						Ok(())
-					}),
-				)
-				.unwrap();
-		};
-
-		run_state_machine(&mut state_machine);
-		run_state_machine(&mut state_machine);
 	}
 }

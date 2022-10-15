@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2019-2021 Parity Technologies (UK) Ltd.
+// Copyright (C) 2019-2022 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -39,7 +39,6 @@ pub mod pallet {
 
 	#[pallet::pallet]
 	#[pallet::generate_store(pub(super) trait Store)]
-	#[pallet::generate_storage_info]
 	pub struct Pallet<T>(_);
 
 	#[pallet::config]
@@ -61,17 +60,12 @@ pub mod pallet {
 	pub(super) type NextKeys<T: Config> =
 		StorageValue<_, WeakBoundedVec<AuthorityId, T::MaxAuthorities>, ValueQuery>;
 
+	#[cfg_attr(feature = "std", derive(Default))]
 	#[pallet::genesis_config]
 	pub struct GenesisConfig {
 		pub keys: Vec<AuthorityId>,
 	}
 
-	#[cfg(feature = "std")]
-	impl Default for GenesisConfig {
-		fn default() -> Self {
-			Self { keys: Default::default() }
-		}
-	}
 	#[pallet::genesis_build]
 	impl<T: Config> GenesisBuild<T> for GenesisConfig {
 		fn build(&self) {
@@ -173,7 +167,10 @@ impl<T: Config> OneSessionHandler<T::AccountId> for Pallet<T> {
 mod tests {
 	use super::*;
 	use crate as pallet_authority_discovery;
-	use frame_support::{parameter_types, traits::GenesisBuild};
+	use frame_support::{
+		parameter_types,
+		traits::{ConstU32, ConstU64, GenesisBuild},
+	};
 	use sp_application_crypto::Pair;
 	use sp_authority_discovery::AuthorityPair;
 	use sp_core::{crypto::key_types, H256};
@@ -201,11 +198,10 @@ mod tests {
 
 	parameter_types! {
 		pub const DisabledValidatorsThreshold: Perbill = Perbill::from_percent(33);
-		pub const MaxAuthorities: u32 = 100;
 	}
 
 	impl Config for Test {
-		type MaxAuthorities = MaxAuthorities;
+		type MaxAuthorities = ConstU32<100>;
 	}
 
 	impl pallet_session::Config for Test {
@@ -213,7 +209,7 @@ mod tests {
 		type Keys = UintAuthorityId;
 		type ShouldEndSession = pallet_session::PeriodicSessions<Period, Offset>;
 		type SessionHandler = TestSessionHandler;
-		type Event = Event;
+		type RuntimeEvent = RuntimeEvent;
 		type ValidatorId = AuthorityId;
 		type ValidatorIdOf = ConvertInto;
 		type NextSessionRotation = pallet_session::PeriodicSessions<Period, Offset>;
@@ -230,10 +226,8 @@ mod tests {
 	parameter_types! {
 		pub const Period: BlockNumber = 1;
 		pub const Offset: BlockNumber = 0;
-		pub const UncleGenerations: u64 = 0;
-		pub const BlockHashCount: u64 = 250;
 		pub BlockWeights: frame_system::limits::BlockWeights =
-			frame_system::limits::BlockWeights::simple_max(1024);
+			frame_system::limits::BlockWeights::simple_max(frame_support::weights::Weight::from_ref_time(1024));
 	}
 
 	impl frame_system::Config for Test {
@@ -241,17 +235,17 @@ mod tests {
 		type BlockWeights = ();
 		type BlockLength = ();
 		type DbWeight = ();
-		type Origin = Origin;
+		type RuntimeOrigin = RuntimeOrigin;
 		type Index = u64;
 		type BlockNumber = BlockNumber;
-		type Call = Call;
+		type RuntimeCall = RuntimeCall;
 		type Hash = H256;
 		type Hashing = ::sp_runtime::traits::BlakeTwo256;
 		type AccountId = AuthorityId;
 		type Lookup = IdentityLookup<Self::AccountId>;
 		type Header = Header;
-		type Event = Event;
-		type BlockHashCount = BlockHashCount;
+		type RuntimeEvent = RuntimeEvent;
+		type BlockHashCount = ConstU64<250>;
 		type Version = ();
 		type PalletInfo = PalletInfo;
 		type AccountData = ();
@@ -260,6 +254,7 @@ mod tests {
 		type SystemWeightInfo = ();
 		type SS58Prefix = ();
 		type OnSetCode = ();
+		type MaxConsumers = ConstU32<16>;
 	}
 
 	pub struct TestSessionHandler;

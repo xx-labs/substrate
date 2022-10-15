@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2021 Parity Technologies (UK) Ltd.
+// Copyright (C) 2021-2022 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,26 +15,30 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use codec::{Decode, Encode, Error, Input};
+use scale_info::TypeInfo;
 use sp_std::{cmp, prelude::*};
 
-use crate::{crypto::Signature, ValidatorSetId};
+use crate::{Payload, ValidatorSetId};
 
 /// A commitment signed by GRANDPA validators as part of BEEFY protocol.
 ///
-/// The commitment contains a [payload] extracted from the finalized block at height [block_number].
+/// The commitment contains a [payload](Commitment::payload) extracted from the finalized block at
+/// height [block_number](Commitment::block_number).
 /// GRANDPA validators collect signatures on commitments and a stream of such signed commitments
 /// (see [SignedCommitment]) forms the BEEFY protocol.
-#[derive(Clone, Debug, PartialEq, Eq, codec::Encode, codec::Decode)]
-pub struct Commitment<TBlockNumber, TPayload> {
-	/// The payload being signed.
+#[derive(Clone, Debug, PartialEq, Eq, Encode, Decode, TypeInfo)]
+pub struct Commitment<TBlockNumber> {
+	///  A collection of payloads to be signed, see [`Payload`] for details.
 	///
-	/// This should be some form of cumulative representation of the chain (think MMR root hash).
-	/// The payload should also contain some details that allow the light client to verify next
-	/// validator set. The protocol does not enforce any particular format of this data,
-	/// nor how often it should be present in commitments, however the light client has to be
-	/// provided with full validator set whenever it performs the transition (i.e. importing first
-	/// block with [validator_set_id] incremented).
-	pub payload: TPayload,
+	/// One of the payloads should be some form of cumulative representation of the chain (think
+	/// MMR root hash). Additionally one of the payloads should also contain some details that
+	/// allow the light client to verify next validator set. The protocol does not enforce any
+	/// particular format of this data, nor how often it should be present in commitments, however
+	/// the light client has to be provided with full validator set whenever it performs the
+	/// transition (i.e. importing first block with
+	/// [validator_set_id](Commitment::validator_set_id) incremented).
+	pub payload: Payload,
 
 	/// Finalized block number this commitment is for.
 	///
@@ -51,25 +55,23 @@ pub struct Commitment<TBlockNumber, TPayload> {
 	///
 	/// Validator set is changing once per epoch. The Light Client must be provided by details
 	/// about the validator set whenever it's importing first commitment with a new
-	/// `validator_set_id`. Validator set data MUST be verifiable, for instance using [payload]
-	/// information.
+	/// `validator_set_id`. Validator set data MUST be verifiable, for instance using
+	/// [payload](Commitment::payload) information.
 	pub validator_set_id: ValidatorSetId,
 }
 
-impl<TBlockNumber, TPayload> cmp::PartialOrd for Commitment<TBlockNumber, TPayload>
+impl<TBlockNumber> cmp::PartialOrd for Commitment<TBlockNumber>
 where
 	TBlockNumber: cmp::Ord,
-	TPayload: cmp::Eq,
 {
 	fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
 		Some(self.cmp(other))
 	}
 }
 
-impl<TBlockNumber, TPayload> cmp::Ord for Commitment<TBlockNumber, TPayload>
+impl<TBlockNumber> cmp::Ord for Commitment<TBlockNumber>
 where
 	TBlockNumber: cmp::Ord,
-	TPayload: cmp::Eq,
 {
 	fn cmp(&self, other: &Self) -> cmp::Ordering {
 		self.validator_set_id
@@ -79,48 +81,184 @@ where
 }
 
 /// A commitment with matching GRANDPA validators' signatures.
-#[derive(Clone, Debug, PartialEq, Eq, codec::Encode, codec::Decode)]
-pub struct SignedCommitment<TBlockNumber, TPayload> {
+///
+/// Note that SCALE-encoding of the structure is optimized for size efficiency over the wire,
+/// please take a look at custom [`Encode`] and [`Decode`] implementations and
+/// `CompactSignedCommitment` struct.
+#[derive(Clone, Debug, PartialEq, Eq, TypeInfo)]
+pub struct SignedCommitment<TBlockNumber, TSignature> {
 	/// The commitment signatures are collected for.
-	pub commitment: Commitment<TBlockNumber, TPayload>,
+	pub commitment: Commitment<TBlockNumber>,
 	/// GRANDPA validators' signatures for the commitment.
 	///
 	/// The length of this `Vec` must match number of validators in the current set (see
 	/// [Commitment::validator_set_id]).
-	pub signatures: Vec<Option<Signature>>,
+	pub signatures: Vec<Option<TSignature>>,
 }
 
-impl<TBlockNumber, TPayload> SignedCommitment<TBlockNumber, TPayload> {
+impl<TBlockNumber, TSignature> SignedCommitment<TBlockNumber, TSignature> {
 	/// Return the number of collected signatures.
 	pub fn no_of_signatures(&self) -> usize {
 		self.signatures.iter().filter(|x| x.is_some()).count()
 	}
 }
 
-/// A [SignedCommitment] with a version number. This variant will be appended
-/// to the block justifications for the block for which the signed commitment
-/// has been generated.
+/// Type to be used to denote placement of signatures
+type BitField = Vec<u8>;
+/// Compress 8 bit values into a single u8 Byte
+const CONTAINER_BIT_SIZE: usize = 8;
+
+/// Compressed representation of [`SignedCommitment`], used for encoding efficiency.
+#[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+struct CompactSignedCommitment<TBlockNumber, TSignature> {
+	/// The commitment, unchanged compared to regular [`SignedCommitment`].
+	commitment: Commitment<TBlockNumber>,
+	/// A bitfield representing presence of a signature coming from a validator at some index.
+	///
+	/// The bit at index `0` is set to `1` in case we have a signature coming from a validator at
+	/// index `0` in in the original validator set. In case the [`SignedCommitment`] does not
+	/// contain that signature the `bit` will be set to `0`. Bits are packed into `Vec<u8>`
+	signatures_from: BitField,
+	/// Number of validators in the Validator Set and hence number of significant bits in the
+	/// [`signatures_from`] collection.
+	///
+	/// Note this might be smaller than the size of `signatures_compact` in case some signatures
+	/// are missing.
+	validator_set_len: u32,
+	/// A `Vec` containing all `Signature`s present in the original [`SignedCommitment`].
+	///
+	/// Note that in order to associate a `Signature` from this `Vec` with a validator, one needs
+	/// to look at the `signatures_from` bitfield, since some validators might have not produced a
+	/// signature.
+	signatures_compact: Vec<TSignature>,
+}
+
+impl<'a, TBlockNumber: Clone, TSignature> CompactSignedCommitment<TBlockNumber, &'a TSignature> {
+	/// Packs a `SignedCommitment` into the compressed `CompactSignedCommitment` format for
+	/// efficient network transport.
+	fn pack(signed_commitment: &'a SignedCommitment<TBlockNumber, TSignature>) -> Self {
+		let SignedCommitment { commitment, signatures } = signed_commitment;
+		let validator_set_len = signatures.len() as u32;
+
+		let signatures_compact: Vec<&'a TSignature> =
+			signatures.iter().filter_map(|x| x.as_ref()).collect();
+		let bits = {
+			let mut bits: Vec<u8> =
+				signatures.iter().map(|x| if x.is_some() { 1 } else { 0 }).collect();
+			// Resize with excess bits for placement purposes
+			let excess_bits_len =
+				CONTAINER_BIT_SIZE - (validator_set_len as usize % CONTAINER_BIT_SIZE);
+			bits.resize(bits.len() + excess_bits_len, 0);
+			bits
+		};
+
+		let mut signatures_from: BitField = vec![];
+		let chunks = bits.chunks(CONTAINER_BIT_SIZE);
+		for chunk in chunks {
+			let mut iter = chunk.iter().copied();
+			let mut v = iter.next().unwrap() as u8;
+
+			for bit in iter {
+				v <<= 1;
+				v |= bit as u8;
+			}
+
+			signatures_from.push(v);
+		}
+
+		Self {
+			commitment: commitment.clone(),
+			signatures_from,
+			validator_set_len,
+			signatures_compact,
+		}
+	}
+
+	/// Unpacks a `CompactSignedCommitment` into the uncompressed `SignedCommitment` form.
+	fn unpack(
+		temporary_signatures: CompactSignedCommitment<TBlockNumber, TSignature>,
+	) -> SignedCommitment<TBlockNumber, TSignature> {
+		let CompactSignedCommitment {
+			commitment,
+			signatures_from,
+			validator_set_len,
+			signatures_compact,
+		} = temporary_signatures;
+		let mut bits: Vec<u8> = vec![];
+
+		for block in signatures_from {
+			for bit in 0..CONTAINER_BIT_SIZE {
+				bits.push((block >> (CONTAINER_BIT_SIZE - bit - 1)) & 1);
+			}
+		}
+
+		bits.truncate(validator_set_len as usize);
+
+		let mut next_signature = signatures_compact.into_iter();
+		let signatures: Vec<Option<TSignature>> = bits
+			.iter()
+			.map(|&x| if x == 1 { next_signature.next() } else { None })
+			.collect();
+
+		SignedCommitment { commitment, signatures }
+	}
+}
+
+impl<TBlockNumber, TSignature> Encode for SignedCommitment<TBlockNumber, TSignature>
+where
+	TBlockNumber: Encode + Clone,
+	TSignature: Encode,
+{
+	fn using_encoded<R, F: FnOnce(&[u8]) -> R>(&self, f: F) -> R {
+		let temp = CompactSignedCommitment::pack(self);
+		temp.using_encoded(f)
+	}
+}
+
+impl<TBlockNumber, TSignature> Decode for SignedCommitment<TBlockNumber, TSignature>
+where
+	TBlockNumber: Decode + Clone,
+	TSignature: Decode,
+{
+	fn decode<I: Input>(input: &mut I) -> Result<Self, Error> {
+		let temp = CompactSignedCommitment::decode(input)?;
+		Ok(CompactSignedCommitment::unpack(temp))
+	}
+}
+
+/// A [SignedCommitment] with a version number.
+///
+/// This variant will be appended to the block justifications for the block
+/// for which the signed commitment has been generated.
+///
+/// Note that this enum is subject to change in the future with introduction
+/// of additional cryptographic primitives to BEEFY.
 #[derive(Clone, Debug, PartialEq, codec::Encode, codec::Decode)]
-pub enum VersionedCommitment<N, P> {
+pub enum VersionedFinalityProof<N, S> {
 	#[codec(index = 1)]
 	/// Current active version
-	V1(SignedCommitment<N, P>),
+	V1(SignedCommitment<N, S>),
+}
+
+impl<N, S> From<SignedCommitment<N, S>> for VersionedFinalityProof<N, S> {
+	fn from(commitment: SignedCommitment<N, S>) -> Self {
+		VersionedFinalityProof::V1(commitment)
+	}
 }
 
 #[cfg(test)]
 mod tests {
-
+	use super::*;
+	use crate::{crypto, known_payloads, KEY_TYPE};
+	use codec::Decode;
 	use sp_core::{keccak_256, Pair};
 	use sp_keystore::{testing::KeyStore, SyncCryptoStore, SyncCryptoStorePtr};
 
-	use super::*;
-	use codec::Decode;
+	type TestCommitment = Commitment<u128>;
+	type TestSignedCommitment = SignedCommitment<u128, crypto::Signature>;
+	type TestVersionedFinalityProof = VersionedFinalityProof<u128, crypto::Signature>;
 
-	use crate::{crypto, KEY_TYPE};
-
-	type TestCommitment = Commitment<u128, String>;
-	type TestSignedCommitment = SignedCommitment<u128, String>;
-	type TestVersionedCommitment = VersionedCommitment<u128, String>;
+	const LARGE_RAW_COMMITMENT: &[u8] = include_bytes!("../test-res/large-raw-commitment");
 
 	// The mock signatures are equivalent to the ones produced by the BEEFY keystore
 	fn mock_signatures() -> (crypto::Signature, crypto::Signature) {
@@ -147,8 +285,10 @@ mod tests {
 	#[test]
 	fn commitment_encode_decode() {
 		// given
+		let payload =
+			Payload::from_single_entry(known_payloads::MMR_ROOT_ID, "Hello World!".encode());
 		let commitment: TestCommitment =
-			Commitment { payload: "Hello World!".into(), block_number: 5, validator_set_id: 0 };
+			Commitment { payload, block_number: 5, validator_set_id: 0 };
 
 		// when
 		let encoded = codec::Encode::encode(&commitment);
@@ -158,8 +298,8 @@ mod tests {
 		assert_eq!(decoded, Ok(commitment));
 		assert_eq!(
 			encoded,
-			hex_literal::hex!(
-				"3048656c6c6f20576f726c6421050000000000000000000000000000000000000000000000"
+			array_bytes::hex2bytes_unchecked(
+				"046d68343048656c6c6f20576f726c6421050000000000000000000000000000000000000000000000"
 			)
 		);
 	}
@@ -167,8 +307,10 @@ mod tests {
 	#[test]
 	fn signed_commitment_encode_decode() {
 		// given
+		let payload =
+			Payload::from_single_entry(known_payloads::MMR_ROOT_ID, "Hello World!".encode());
 		let commitment: TestCommitment =
-			Commitment { payload: "Hello World!".into(), block_number: 5, validator_set_id: 0 };
+			Commitment { payload, block_number: 5, validator_set_id: 0 };
 
 		let sigs = mock_signatures();
 
@@ -185,11 +327,14 @@ mod tests {
 		assert_eq!(decoded, Ok(signed));
 		assert_eq!(
 			encoded,
-			hex_literal::hex!(
-				"3048656c6c6f20576f726c64210500000000000000000000000000000000000000000000001000
-			0001558455ad81279df0795cc985580e4fb75d72d948d1107b2ac80a09abed4da8480c746cc321f2319a5e99a830e314d
-			10dd3cd68ce3dc0c33c86e99bcb7816f9ba01012d6e1f8105c337a86cdd9aaacdc496577f3db8c55ef9e6fd48f2c5c05a
-			2274707491635d8ba3df64f324575b7b2a34487bca2324b6a0046395a71681be3d0c2a00"
+			array_bytes::hex2bytes_unchecked(
+				"\
+				046d68343048656c6c6f20576f726c64210500000000000000000000000000000000000000000000000\
+				4300400000008558455ad81279df0795cc985580e4fb75d72d948d1107b2ac80a09abed4da8480c746c\
+				c321f2319a5e99a830e314d10dd3cd68ce3dc0c33c86e99bcb7816f9ba012d6e1f8105c337a86cdd9aa\
+				acdc496577f3db8c55ef9e6fd48f2c5c05a2274707491635d8ba3df64f324575b7b2a34487bca2324b6\
+				a0046395a71681be3d0c2a00\
+			"
 			)
 		);
 	}
@@ -197,8 +342,10 @@ mod tests {
 	#[test]
 	fn signed_commitment_count_signatures() {
 		// given
+		let payload =
+			Payload::from_single_entry(known_payloads::MMR_ROOT_ID, "Hello World!".encode());
 		let commitment: TestCommitment =
-			Commitment { payload: "Hello World!".into(), block_number: 5, validator_set_id: 0 };
+			Commitment { payload, block_number: 5, validator_set_id: 0 };
 
 		let sigs = mock_signatures();
 
@@ -221,7 +368,9 @@ mod tests {
 			block_number: u128,
 			validator_set_id: crate::ValidatorSetId,
 		) -> TestCommitment {
-			Commitment { payload: "Hello World!".into(), block_number, validator_set_id }
+			let payload =
+				Payload::from_single_entry(known_payloads::MMR_ROOT_ID, "Hello World!".encode());
+			Commitment { payload, block_number, validator_set_id }
 		}
 
 		// given
@@ -240,8 +389,10 @@ mod tests {
 
 	#[test]
 	fn versioned_commitment_encode_decode() {
+		let payload =
+			Payload::from_single_entry(known_payloads::MMR_ROOT_ID, "Hello World!".encode());
 		let commitment: TestCommitment =
-			Commitment { payload: "Hello World!".into(), block_number: 5, validator_set_id: 0 };
+			Commitment { payload, block_number: 5, validator_set_id: 0 };
 
 		let sigs = mock_signatures();
 
@@ -250,15 +401,40 @@ mod tests {
 			signatures: vec![None, None, Some(sigs.0), Some(sigs.1)],
 		};
 
-		let versioned = TestVersionedCommitment::V1(signed.clone());
+		let versioned = TestVersionedFinalityProof::V1(signed.clone());
 
 		let encoded = codec::Encode::encode(&versioned);
 
 		assert_eq!(1, encoded[0]);
 		assert_eq!(encoded[1..], codec::Encode::encode(&signed));
 
-		let decoded = TestVersionedCommitment::decode(&mut &*encoded);
+		let decoded = TestVersionedFinalityProof::decode(&mut &*encoded);
 
 		assert_eq!(decoded, Ok(versioned));
+	}
+
+	#[test]
+	fn large_signed_commitment_encode_decode() {
+		// given
+		let payload =
+			Payload::from_single_entry(known_payloads::MMR_ROOT_ID, "Hello World!".encode());
+		let commitment: TestCommitment =
+			Commitment { payload, block_number: 5, validator_set_id: 0 };
+
+		let sigs = mock_signatures();
+
+		let signatures: Vec<Option<_>> = (0..1024)
+			.into_iter()
+			.map(|x| if x < 340 { None } else { Some(sigs.0.clone()) })
+			.collect();
+		let signed = SignedCommitment { commitment, signatures };
+
+		// when
+		let encoded = codec::Encode::encode(&signed);
+		let decoded = TestSignedCommitment::decode(&mut &*encoded);
+
+		// then
+		assert_eq!(decoded, Ok(signed));
+		assert_eq!(encoded, LARGE_RAW_COMMITMENT);
 	}
 }

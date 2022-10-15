@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2019-2021 Parity Technologies (UK) Ltd.
+// Copyright (C) 2019-2022 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,6 +16,10 @@
 // limitations under the License.
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use frame_support::{
+	traits::{ConstU32, ConstU64},
+	weights::Weight,
+};
 use sp_core::H256;
 use sp_runtime::{
 	testing::Header,
@@ -33,7 +37,7 @@ mod module {
 
 	#[pallet::config]
 	pub trait Config: frame_system::Config {
-		type Event: From<Event> + IsType<<Self as frame_system::Config>::Event>;
+		type RuntimeEvent: From<Event> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
 	}
 
 	#[pallet::event]
@@ -58,10 +62,9 @@ frame_support::construct_runtime!(
 );
 
 frame_support::parameter_types! {
-	pub const BlockHashCount: u64 = 250;
 	pub BlockWeights: frame_system::limits::BlockWeights =
 		frame_system::limits::BlockWeights::with_sensible_defaults(
-			4 * 1024 * 1024, Perbill::from_percent(75),
+			Weight::from_ref_time(4 * 1024 * 1024), Perbill::from_percent(75),
 		);
 	pub BlockLength: frame_system::limits::BlockLength =
 		frame_system::limits::BlockLength::max_with_normal_ratio(
@@ -73,17 +76,17 @@ impl frame_system::Config for Runtime {
 	type BlockWeights = ();
 	type BlockLength = BlockLength;
 	type DbWeight = ();
-	type Origin = Origin;
+	type RuntimeOrigin = RuntimeOrigin;
 	type Index = u64;
 	type BlockNumber = u64;
-	type Call = Call;
+	type RuntimeCall = RuntimeCall;
 	type Hash = H256;
 	type Hashing = BlakeTwo256;
 	type AccountId = u64;
 	type Lookup = IdentityLookup<Self::AccountId>;
 	type Header = Header;
-	type Event = Event;
-	type BlockHashCount = BlockHashCount;
+	type RuntimeEvent = RuntimeEvent;
+	type BlockHashCount = ConstU64<250>;
 	type Version = ();
 	type PalletInfo = PalletInfo;
 	type AccountData = ();
@@ -92,10 +95,11 @@ impl frame_system::Config for Runtime {
 	type SystemWeightInfo = ();
 	type SS58Prefix = ();
 	type OnSetCode = ();
+	type MaxConsumers = ConstU32<16>;
 }
 
 impl module::Config for Runtime {
-	type Event = Event;
+	type RuntimeEvent = RuntimeEvent;
 }
 
 fn new_test_ext() -> sp_io::TestExternalities {

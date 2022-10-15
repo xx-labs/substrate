@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2019-2021 Parity Technologies (UK) Ltd.
+// Copyright (C) 2019-2022 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,6 +18,7 @@
 //! Traits for managing information attached to pallets and their constituents.
 
 use codec::{Decode, Encode};
+use impl_trait_for_tuples::impl_for_tuples;
 use sp_runtime::RuntimeDebug;
 use sp_std::prelude::*;
 
@@ -70,40 +71,22 @@ pub trait PalletsInfoAccess {
 	///
 	/// You probably don't want this function but `infos()` instead.
 	fn count() -> usize {
-		0
+		// for backwards compatibility with XCM-3, Mark as deprecated.
+		Self::infos().len()
 	}
-
-	/// Extend the given vector by all of the pallets' information that this type represents.
-	///
-	/// You probably don't want this function but `infos()` instead.
-	fn accumulate(_accumulator: &mut Vec<PalletInfoData>) {}
 
 	/// All of the pallets' information that this type represents.
+	fn infos() -> Vec<PalletInfoData>;
+}
+
+#[cfg_attr(all(not(feature = "tuples-96"), not(feature = "tuples-128")), impl_for_tuples(64))]
+#[cfg_attr(all(feature = "tuples-96", not(feature = "tuples-128")), impl_for_tuples(96))]
+#[cfg_attr(feature = "tuples-128", impl_for_tuples(128))]
+impl PalletsInfoAccess for Tuple {
 	fn infos() -> Vec<PalletInfoData> {
-		let mut result = Vec::with_capacity(Self::count());
-		Self::accumulate(&mut result);
-		result
-	}
-}
-
-impl PalletsInfoAccess for () {}
-impl<T: PalletsInfoAccess> PalletsInfoAccess for (T,) {
-	fn count() -> usize {
-		T::count()
-	}
-	fn accumulate(acc: &mut Vec<PalletInfoData>) {
-		T::accumulate(acc)
-	}
-}
-
-impl<T1: PalletsInfoAccess, T2: PalletsInfoAccess> PalletsInfoAccess for (T1, T2) {
-	fn count() -> usize {
-		T1::count() + T2::count()
-	}
-	fn accumulate(acc: &mut Vec<PalletInfoData>) {
-		// The AllPallets type tuplises the pallets in reverse order, so we unreverse them here.
-		T2::accumulate(acc);
-		T1::accumulate(acc);
+		let mut res = vec![];
+		for_tuples!( #( res.extend(Tuple::infos()); )* );
+		res
 	}
 }
 
@@ -135,7 +118,7 @@ pub trait GetCallMetadata {
 }
 
 /// The version of a crate.
-#[derive(RuntimeDebug, Eq, PartialEq, Encode, Decode, Clone, Copy, Default)]
+#[derive(Debug, Eq, PartialEq, Encode, Decode, Clone, Copy, Default)]
 pub struct CrateVersion {
 	/// The major version of the crate.
 	pub major: u16,
@@ -161,7 +144,7 @@ impl sp_std::cmp::Ord for CrateVersion {
 
 impl sp_std::cmp::PartialOrd for CrateVersion {
 	fn partial_cmp(&self, other: &Self) -> Option<sp_std::cmp::Ordering> {
-		Some(<Self as Ord>::cmp(&self, other))
+		Some(<Self as Ord>::cmp(self, other))
 	}
 }
 
@@ -175,7 +158,7 @@ pub const STORAGE_VERSION_STORAGE_KEY_POSTFIX: &[u8] = b":__STORAGE_VERSION__:";
 ///
 /// Each storage version of a pallet is stored in the state under a fixed key. See
 /// [`STORAGE_VERSION_STORAGE_KEY_POSTFIX`] for how this key is built.
-#[derive(RuntimeDebug, Eq, PartialEq, Encode, Decode, Ord, Clone, Copy, PartialOrd, Default)]
+#[derive(Debug, Eq, PartialEq, Encode, Decode, Ord, Clone, Copy, PartialOrd, Default)]
 pub struct StorageVersion(u16);
 
 impl StorageVersion {

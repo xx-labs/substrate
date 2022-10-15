@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2020-2021 Parity Technologies (UK) Ltd.
+// Copyright (C) 2020-2022 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -32,7 +32,6 @@ use sp_runtime::{
 	DigestItem,
 };
 use std::{
-	borrow::Cow,
 	collections::HashMap,
 	pin::Pin,
 	sync::{
@@ -169,7 +168,7 @@ where
 				Err(err) => {
 					warn!(
 						target: "pow",
-						"Unable to import mined block: {:?}",
+						"Unable to import mined block: {}",
 						err,
 					);
 					return false
@@ -212,10 +211,7 @@ where
 		let intermediate = PowIntermediate::<Algorithm::Difficulty> {
 			difficulty: Some(build.metadata.difficulty),
 		};
-
-		import_block
-			.intermediates
-			.insert(Cow::from(INTERMEDIATE_KEY), Box::new(intermediate) as Box<_>);
+		import_block.insert_intermediate(INTERMEDIATE_KEY, intermediate);
 
 		let header = import_block.post_header();
 		let mut block_import = self.block_import.lock();
@@ -238,7 +234,7 @@ where
 			Err(err) => {
 				warn!(
 					target: "pow",
-					"Unable to import mined block: {:?}",
+					"Unable to import mined block: {}",
 					err,
 				);
 				false
@@ -295,7 +291,7 @@ impl<Block: BlockT> Stream for UntilImportedOrTimeout<Block> {
 			}
 		}
 
-		let timeout = self.timeout.clone();
+		let timeout = self.timeout;
 		let inner_delay = self.inner_delay.get_or_insert_with(|| Delay::new(timeout));
 
 		match Future::poll(Pin::new(inner_delay), cx) {

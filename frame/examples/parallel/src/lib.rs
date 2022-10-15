@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2020-2021 Parity Technologies (UK) Ltd.
+// Copyright (C) 2020-2022 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -41,13 +41,11 @@ pub mod pallet {
 	use frame_system::pallet_prelude::*;
 
 	#[pallet::config]
-	pub trait Config: frame_system::Config {
-		/// The overarching dispatch call type.
-		type Call: From<Call<Self>>;
-	}
+	pub trait Config: frame_system::Config {}
 
 	#[pallet::pallet]
 	#[pallet::generate_store(pub(super) trait Store)]
+	#[pallet::without_storage_info]
 	pub struct Pallet<T>(_);
 
 	/// A public part of the pallet.
@@ -105,13 +103,13 @@ pub struct EnlistedParticipant {
 
 impl EnlistedParticipant {
 	fn verify(&self, event_id: &[u8]) -> bool {
-		use sp_core::Public;
+		use sp_core::ByteArray;
 		use sp_runtime::traits::Verify;
 
 		match sp_core::sr25519::Signature::try_from(&self.signature[..]) {
-			Ok(signature) => {
-				let public = sp_core::sr25519::Public::from_slice(self.account.as_ref());
-				signature.verify(event_id, &public)
+			Ok(signature) => match sp_core::sr25519::Public::from_slice(self.account.as_ref()) {
+				Err(()) => false,
+				Ok(signer) => signature.verify(event_id, &signer),
 			},
 			_ => false,
 		}

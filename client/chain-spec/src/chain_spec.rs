@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2017-2021 Parity Technologies (UK) Ltd.
+// Copyright (C) 2017-2022 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -20,7 +20,7 @@
 #![warn(missing_docs)]
 
 use crate::{extension::GetExtension, ChainType, Properties, RuntimeGenesis};
-use sc_network::config::MultiaddrWithPeerId;
+use sc_network_common::config::MultiaddrWithPeerId;
 use sc_telemetry::TelemetryEndpoints;
 use serde::{Deserialize, Serialize};
 use serde_json as json;
@@ -29,7 +29,7 @@ use sp_core::{
 	Bytes,
 };
 use sp_runtime::BuildStorage;
-use std::{borrow::Cow, collections::HashMap, fs::File, path::PathBuf, sync::Arc};
+use std::{borrow::Cow, collections::BTreeMap, fs::File, path::PathBuf, sync::Arc};
 
 enum GenesisSource<G> {
 	File(PathBuf),
@@ -61,7 +61,16 @@ impl<G: RuntimeGenesis> GenesisSource<G> {
 				let file = File::open(path).map_err(|e| {
 					format!("Error opening spec file at `{}`: {}", path.display(), e)
 				})?;
-				let genesis: GenesisContainer<G> = json::from_reader(file)
+				// SAFETY: `mmap` is fundamentally unsafe since technically the file can change
+				//         underneath us while it is mapped; in practice it's unlikely to be a
+				//         problem
+				let bytes = unsafe {
+					memmap2::Mmap::map(&file).map_err(|e| {
+						format!("Error mmaping spec file `{}`: {}", path.display(), e)
+					})?
+				};
+
+				let genesis: GenesisContainer<G> = json::from_slice(&bytes)
 					.map_err(|e| format!("Error parsing spec file: {}", e))?;
 				Ok(genesis.genesis)
 			},
@@ -131,7 +140,7 @@ impl<G: RuntimeGenesis, E> BuildStorage for ChainSpec<G, E> {
 	}
 }
 
-pub type GenesisStorage = HashMap<StorageKey, StorageData>;
+pub type GenesisStorage = BTreeMap<StorageKey, StorageData>;
 
 /// Raw storage content for genesis block.
 #[derive(Serialize, Deserialize)]
@@ -139,7 +148,7 @@ pub type GenesisStorage = HashMap<StorageKey, StorageData>;
 #[serde(deny_unknown_fields)]
 pub struct RawGenesis {
 	pub top: GenesisStorage,
-	pub children_default: HashMap<StorageKey, GenesisStorage>,
+	pub children_default: BTreeMap<StorageKey, GenesisStorage>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -164,20 +173,27 @@ struct ClientSpec<E> {
 	boot_nodes: Vec<MultiaddrWithPeerId>,
 	telemetry_endpoints: Option<TelemetryEndpoints>,
 	protocol_id: Option<String>,
+	/// Arbitrary string. Nodes will only synchronize with other nodes that have the same value
+	/// in their `fork_id`. This can be used in order to segregate nodes in cases when multiple
+	/// chains have the same genesis hash.
+	#[serde(default = "Default::default", skip_serializing_if = "Option::is_none")]
+	fork_id: Option<String>,
 	properties: Option<Properties>,
 	#[serde(flatten)]
 	extensions: E,
 	// Never used, left only for backward compatibility.
+	#[serde(default, skip_serializing)]
+	#[allow(unused)]
 	consensus_engine: (),
 	#[serde(skip_serializing)]
 	#[allow(unused)]
 	genesis: serde::de::IgnoredAny,
-	/// Mapping from `block_hash` to `wasm_code`.
+	/// Mapping from `block_number` to `wasm_code`.
 	///
-	/// The given `wasm_code` will be used to substitute the on-chain wasm code from the given
-	/// block hash onwards.
+	/// The given `wasm_code` will be used to substitute the on-chain wasm code starting with the
+	/// given block number until the `spec_version` on chain changes.
 	#[serde(default)]
-	code_substitutes: HashMap<String, Bytes>,
+	code_substitutes: BTreeMap<String, Bytes>,
 }
 
 /// A type denoting empty extensions.
@@ -220,7 +236,12 @@ impl<G, E> ChainSpec<G, E> {
 
 	/// Network protocol id.
 	pub fn protocol_id(&self) -> Option<&str> {
-		self.client_spec.protocol_id.as_ref().map(String::as_str)
+		self.client_spec.protocol_id.as_deref()
+	}
+
+	/// Optional network fork identifier.
+	pub fn fork_id(&self) -> Option<&str> {
+		self.client_spec.fork_id.as_deref()
 	}
 
 	/// Additional loosly-typed properties of the chain.
@@ -254,6 +275,7 @@ impl<G, E> ChainSpec<G, E> {
 		boot_nodes: Vec<MultiaddrWithPeerId>,
 		telemetry_endpoints: Option<TelemetryEndpoints>,
 		protocol_id: Option<&str>,
+		fork_id: Option<&str>,
 		properties: Option<Properties>,
 		extensions: E,
 	) -> Self {
@@ -264,11 +286,12 @@ impl<G, E> ChainSpec<G, E> {
 			boot_nodes,
 			telemetry_endpoints,
 			protocol_id: protocol_id.map(str::to_owned),
+			fork_id: fork_id.map(str::to_owned),
 			properties,
 			extensions,
 			consensus_engine: (),
 			genesis: Default::default(),
-			code_substitutes: HashMap::new(),
+			code_substitutes: BTreeMap::new(),
 		};
 
 		ChainSpec { client_spec, genesis: GenesisSource::Factory(Arc::new(constructor)) }
@@ -381,6 +404,10 @@ where
 		ChainSpec::protocol_id(self)
 	}
 
+	fn fork_id(&self) -> Option<&str> {
+		ChainSpec::fork_id(self)
+	}
+
 	fn properties(&self) -> Properties {
 		ChainSpec::properties(self)
 	}
@@ -413,7 +440,7 @@ where
 		self.genesis = GenesisSource::Storage(storage);
 	}
 
-	fn code_substitutes(&self) -> std::collections::HashMap<String, Vec<u8>> {
+	fn code_substitutes(&self) -> std::collections::BTreeMap<String, Vec<u8>> {
 		self.client_spec
 			.code_substitutes
 			.iter()
@@ -427,7 +454,7 @@ mod tests {
 	use super::*;
 
 	#[derive(Debug, Serialize, Deserialize)]
-	struct Genesis(HashMap<String, String>);
+	struct Genesis(BTreeMap<String, String>);
 
 	impl BuildStorage for Genesis {
 		fn assimilate_storage(&self, storage: &mut Storage) -> Result<(), String> {
@@ -452,10 +479,26 @@ mod tests {
 		assert_eq!(spec2.chain_type(), ChainType::Live)
 	}
 
-	#[derive(Debug, Serialize, Deserialize)]
+	#[derive(Debug, Serialize, Deserialize, Clone)]
 	#[serde(rename_all = "camelCase")]
 	struct Extension1 {
 		my_property: String,
+	}
+
+	impl crate::Extension for Extension1 {
+		type Forks = Option<()>;
+
+		fn get<T: 'static>(&self) -> Option<&T> {
+			None
+		}
+
+		fn get_any(&self, _: std::any::TypeId) -> &dyn std::any::Any {
+			self
+		}
+
+		fn get_any_mut(&mut self, _: std::any::TypeId) -> &mut dyn std::any::Any {
+			self
+		}
 	}
 
 	type TestSpec2 = ChainSpec<Genesis, Extension1>;
@@ -468,5 +511,36 @@ mod tests {
 		.unwrap();
 
 		assert_eq!(spec.extensions().my_property, "Test Extension");
+	}
+
+	#[test]
+	fn chain_spec_raw_output_should_be_deterministic() {
+		let mut spec = TestSpec2::from_json_bytes(Cow::Owned(
+			include_bytes!("../res/chain_spec2.json").to_vec(),
+		))
+		.unwrap();
+
+		let mut storage = spec.build_storage().unwrap();
+
+		// Add some extra data, so that storage "sorting" is tested.
+		let extra_data = &[("random_key", "val"), ("r@nd0m_key", "val"), ("aaarandom_key", "val")];
+		storage
+			.top
+			.extend(extra_data.iter().map(|(k, v)| (k.as_bytes().to_vec(), v.as_bytes().to_vec())));
+		crate::ChainSpec::set_storage(&mut spec, storage);
+
+		let json = spec.as_json(true).unwrap();
+
+		// Check multiple times that decoding and encoding the chain spec leads always to the same
+		// output.
+		for _ in 0..10 {
+			assert_eq!(
+				json,
+				TestSpec2::from_json_bytes(json.as_bytes().to_vec())
+					.unwrap()
+					.as_json(true)
+					.unwrap()
+			);
+		}
 	}
 }

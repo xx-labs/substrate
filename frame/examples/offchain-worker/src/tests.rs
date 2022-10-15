@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2020-2021 Parity Technologies (UK) Ltd.
+// Copyright (C) 2020-2022 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,7 +18,10 @@
 use crate as example_offchain_worker;
 use crate::*;
 use codec::Decode;
-use frame_support::{assert_ok, parameter_types};
+use frame_support::{
+	assert_ok, parameter_types,
+	traits::{ConstU32, ConstU64},
+};
 use sp_core::{
 	offchain::{testing, OffchainWorkerExt, TransactionPoolExt},
 	sr25519::Signature,
@@ -49,17 +52,16 @@ frame_support::construct_runtime!(
 );
 
 parameter_types! {
-	pub const BlockHashCount: u64 = 250;
 	pub BlockWeights: frame_system::limits::BlockWeights =
-		frame_system::limits::BlockWeights::simple_max(1024);
+		frame_system::limits::BlockWeights::simple_max(frame_support::weights::Weight::from_ref_time(1024));
 }
 impl frame_system::Config for Test {
 	type BaseCallFilter = frame_support::traits::Everything;
 	type BlockWeights = ();
 	type BlockLength = ();
 	type DbWeight = ();
-	type Origin = Origin;
-	type Call = Call;
+	type RuntimeOrigin = RuntimeOrigin;
+	type RuntimeCall = RuntimeCall;
 	type Index = u64;
 	type BlockNumber = u64;
 	type Hash = H256;
@@ -67,8 +69,8 @@ impl frame_system::Config for Test {
 	type AccountId = sp_core::sr25519::Public;
 	type Lookup = IdentityLookup<Self::AccountId>;
 	type Header = Header;
-	type Event = Event;
-	type BlockHashCount = BlockHashCount;
+	type RuntimeEvent = RuntimeEvent;
+	type BlockHashCount = ConstU64<250>;
 	type Version = ();
 	type PalletInfo = PalletInfo;
 	type AccountData = ();
@@ -77,9 +79,10 @@ impl frame_system::Config for Test {
 	type SystemWeightInfo = ();
 	type SS58Prefix = ();
 	type OnSetCode = ();
+	type MaxConsumers = ConstU32<16>;
 }
 
-type Extrinsic = TestXt<Call, ()>;
+type Extrinsic = TestXt<RuntimeCall, ()>;
 type AccountId = <<Signature as Verify>::Signer as IdentifyAccount>::AccountId;
 
 impl frame_system::offchain::SigningTypes for Test {
@@ -89,39 +92,41 @@ impl frame_system::offchain::SigningTypes for Test {
 
 impl<LocalCall> frame_system::offchain::SendTransactionTypes<LocalCall> for Test
 where
-	Call: From<LocalCall>,
+	RuntimeCall: From<LocalCall>,
 {
-	type OverarchingCall = Call;
+	type OverarchingCall = RuntimeCall;
 	type Extrinsic = Extrinsic;
 }
 
 impl<LocalCall> frame_system::offchain::CreateSignedTransaction<LocalCall> for Test
 where
-	Call: From<LocalCall>,
+	RuntimeCall: From<LocalCall>,
 {
 	fn create_transaction<C: frame_system::offchain::AppCrypto<Self::Public, Self::Signature>>(
-		call: Call,
+		call: RuntimeCall,
 		_public: <Signature as Verify>::Signer,
 		_account: AccountId,
 		nonce: u64,
-	) -> Option<(Call, <Extrinsic as ExtrinsicT>::SignaturePayload)> {
+	) -> Option<(RuntimeCall, <Extrinsic as ExtrinsicT>::SignaturePayload)> {
 		Some((call, (nonce, ())))
 	}
 }
 
 parameter_types! {
-	pub const GracePeriod: u64 = 5;
-	pub const UnsignedInterval: u64 = 128;
 	pub const UnsignedPriority: u64 = 1 << 20;
 }
 
 impl Config for Test {
-	type Event = Event;
+	type RuntimeEvent = RuntimeEvent;
 	type AuthorityId = crypto::TestAuthId;
-	type Call = Call;
-	type GracePeriod = GracePeriod;
-	type UnsignedInterval = UnsignedInterval;
+	type GracePeriod = ConstU64<5>;
+	type UnsignedInterval = ConstU64<128>;
 	type UnsignedPriority = UnsignedPriority;
+	type MaxPrices = ConstU32<64>;
+}
+
+fn test_pub() -> sp_core::sr25519::Public {
+	sp_core::sr25519::Public::from_raw([1u8; 32])
 }
 
 #[test]
@@ -129,10 +134,10 @@ fn it_aggregates_the_price() {
 	sp_io::TestExternalities::default().execute_with(|| {
 		assert_eq!(Example::average_price(), None);
 
-		assert_ok!(Example::submit_price(Origin::signed(Default::default()), 27));
+		assert_ok!(Example::submit_price(RuntimeOrigin::signed(test_pub()), 27));
 		assert_eq!(Example::average_price(), Some(27));
 
-		assert_ok!(Example::submit_price(Origin::signed(Default::default()), 43));
+		assert_ok!(Example::submit_price(RuntimeOrigin::signed(test_pub()), 43));
 		assert_eq!(Example::average_price(), Some(35));
 	});
 }
@@ -227,7 +232,7 @@ fn should_submit_signed_transaction_on_chain() {
 		assert!(pool_state.read().transactions.is_empty());
 		let tx = Extrinsic::decode(&mut &*tx).unwrap();
 		assert_eq!(tx.signature.unwrap().0, 0);
-		assert_eq!(tx.call, Call::Example(crate::Call::submit_price { price: 15523 }));
+		assert_eq!(tx.call, RuntimeCall::Example(crate::Call::submit_price { price: 15523 }));
 	});
 }
 
@@ -247,10 +252,9 @@ fn should_submit_unsigned_transaction_on_chain_for_any_account() {
 	)
 	.unwrap();
 
-	let public_key = SyncCryptoStore::sr25519_public_keys(&keystore, crate::crypto::Public::ID)
+	let public_key = *SyncCryptoStore::sr25519_public_keys(&keystore, crate::crypto::Public::ID)
 		.get(0)
-		.unwrap()
-		.clone();
+		.unwrap();
 
 	let mut t = sp_io::TestExternalities::default();
 	t.register_extension(OffchainWorkerExt::new(offchain));
@@ -273,7 +277,7 @@ fn should_submit_unsigned_transaction_on_chain_for_any_account() {
 		let tx = pool_state.write().transactions.pop().unwrap();
 		let tx = Extrinsic::decode(&mut &*tx).unwrap();
 		assert_eq!(tx.signature, None);
-		if let Call::Example(crate::Call::submit_price_unsigned_with_signed_payload {
+		if let RuntimeCall::Example(crate::Call::submit_price_unsigned_with_signed_payload {
 			price_payload: body,
 			signature,
 		}) = tx.call
@@ -307,10 +311,9 @@ fn should_submit_unsigned_transaction_on_chain_for_all_accounts() {
 	)
 	.unwrap();
 
-	let public_key = SyncCryptoStore::sr25519_public_keys(&keystore, crate::crypto::Public::ID)
+	let public_key = *SyncCryptoStore::sr25519_public_keys(&keystore, crate::crypto::Public::ID)
 		.get(0)
-		.unwrap()
-		.clone();
+		.unwrap();
 
 	let mut t = sp_io::TestExternalities::default();
 	t.register_extension(OffchainWorkerExt::new(offchain));
@@ -333,7 +336,7 @@ fn should_submit_unsigned_transaction_on_chain_for_all_accounts() {
 		let tx = pool_state.write().transactions.pop().unwrap();
 		let tx = Extrinsic::decode(&mut &*tx).unwrap();
 		assert_eq!(tx.signature, None);
-		if let Call::Example(crate::Call::submit_price_unsigned_with_signed_payload {
+		if let RuntimeCall::Example(crate::Call::submit_price_unsigned_with_signed_payload {
 			price_payload: body,
 			signature,
 		}) = tx.call
@@ -375,7 +378,10 @@ fn should_submit_raw_unsigned_transaction_on_chain() {
 		assert_eq!(tx.signature, None);
 		assert_eq!(
 			tx.call,
-			Call::Example(crate::Call::submit_price_unsigned { block_number: 1, price: 15523 })
+			RuntimeCall::Example(crate::Call::submit_price_unsigned {
+				block_number: 1,
+				price: 15523
+			})
 		);
 	});
 }

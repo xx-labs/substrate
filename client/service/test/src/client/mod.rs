@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2018-2021 Parity Technologies (UK) Ltd.
+// Copyright (C) 2018-2022 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -17,13 +17,12 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use futures::executor::block_on;
-use hex_literal::hex;
 use parity_scale_codec::{Decode, Encode, Joiner};
 use sc_block_builder::BlockBuilderProvider;
-use sc_client_api::{in_mem, BlockBackend, BlockchainEvents, StorageProvider};
-use sc_client_db::{
-	Backend, DatabaseSettings, DatabaseSource, KeepBlocks, PruningMode, TransactionStorageMode,
+use sc_client_api::{
+	in_mem, BlockBackend, BlockchainEvents, FinalityNotifications, StorageProvider,
 };
+use sc_client_db::{Backend, BlocksPruning, DatabaseSettings, DatabaseSource, PruningMode};
 use sc_consensus::{
 	BlockCheckParams, BlockImport, BlockImportParams, ForkChoiceStrategy, ImportResult,
 };
@@ -34,13 +33,13 @@ use sp_core::{testing::TaskExecutor, H256};
 use sp_runtime::{
 	generic::BlockId,
 	traits::{BlakeTwo256, Block as BlockT, Header as HeaderT},
-	ConsensusEngineId, Justifications,
+	ConsensusEngineId, Justifications, StateVersion,
 };
 use sp_state_machine::{
 	backend::Backend as _, ExecutionStrategy, InMemoryBackend, OverlayedChanges, StateMachine,
 };
 use sp_storage::{ChildInfo, StorageKey};
-use sp_trie::{trie_types::Layout, TrieConfiguration};
+use sp_trie::{LayoutV0, TrieConfiguration};
 use std::{collections::HashSet, sync::Arc};
 use substrate_test_runtime::TestAPI;
 use substrate_test_runtime_client::{
@@ -72,7 +71,12 @@ impl sc_executor::NativeExecutionDispatch for ExecutorDispatch {
 }
 
 fn executor() -> sc_executor::NativeElseWasmExecutor<ExecutorDispatch> {
-	sc_executor::NativeElseWasmExecutor::new(sc_executor::WasmExecutionMethod::Interpreted, None, 8)
+	sc_executor::NativeElseWasmExecutor::new(
+		sc_executor::WasmExecutionMethod::Interpreted,
+		None,
+		8,
+		2,
+	)
 }
 
 fn construct_block(
@@ -85,7 +89,7 @@ fn construct_block(
 	let transactions = txs.into_iter().map(|tx| tx.into_signed_tx()).collect::<Vec<_>>();
 
 	let iter = transactions.iter().map(Encode::encode);
-	let extrinsics_root = Layout::<BlakeTwo256>::ordered_trie_root(iter).into();
+	let extrinsics_root = LayoutV0::<BlakeTwo256>::ordered_trie_root(iter).into();
 
 	let mut header = Header {
 		parent_hash,
@@ -150,7 +154,9 @@ fn block1(genesis_hash: Hash, backend: &InMemoryBackend<BlakeTwo256>) -> (Vec<u8
 		backend,
 		1,
 		genesis_hash,
-		hex!("25e5b37074063ab75c889326246640729b40d0c86932edc527bc80db0e04fe5c").into(),
+		array_bytes::hex_n_into_unchecked(
+			"25e5b37074063ab75c889326246640729b40d0c86932edc527bc80db0e04fe5c",
+		),
 		vec![Transfer {
 			from: AccountKeyring::One.into(),
 			to: AccountKeyring::Two.into(),
@@ -158,6 +164,24 @@ fn block1(genesis_hash: Hash, backend: &InMemoryBackend<BlakeTwo256>) -> (Vec<u8
 			nonce: 0,
 		}],
 	)
+}
+
+fn finality_notification_check(
+	notifications: &mut FinalityNotifications<Block>,
+	finalized: &[Hash],
+	stale_heads: &[Hash],
+) {
+	match notifications.try_next() {
+		Ok(Some(notif)) => {
+			let stale_heads_expected: HashSet<_> = stale_heads.iter().collect();
+			let stale_heads: HashSet<_> = notif.stale_heads.iter().collect();
+			assert_eq!(notif.tree_route.as_ref(), &finalized[..finalized.len() - 1]);
+			assert_eq!(notif.hash, *finalized.last().unwrap());
+			assert_eq!(stale_heads, stale_heads_expected);
+		},
+		Ok(None) => panic!("unexpected notification result, client send channel was closed"),
+		Err(_) => assert!(finalized.is_empty()),
+	}
 }
 
 #[test]
@@ -172,7 +196,7 @@ fn construct_genesis_should_work_with_native() {
 	.genesis_map();
 	let genesis_hash = insert_genesis_block(&mut storage);
 
-	let backend = InMemoryBackend::from(storage);
+	let backend = InMemoryBackend::from((storage, StateVersion::default()));
 	let (b1data, _b1hash) = block1(genesis_hash, &backend);
 	let backend_runtime_code = sp_state_machine::backend::BackendRuntimeCode::new(&backend);
 	let runtime_code = backend_runtime_code.runtime_code().expect("Code is part of the backend");
@@ -205,7 +229,7 @@ fn construct_genesis_should_work_with_wasm() {
 	.genesis_map();
 	let genesis_hash = insert_genesis_block(&mut storage);
 
-	let backend = InMemoryBackend::from(storage);
+	let backend = InMemoryBackend::from((storage, StateVersion::default()));
 	let (b1data, _b1hash) = block1(genesis_hash, &backend);
 	let backend_runtime_code = sp_state_machine::backend::BackendRuntimeCode::new(&backend);
 	let runtime_code = backend_runtime_code.runtime_code().expect("Code is part of the backend");
@@ -238,7 +262,7 @@ fn construct_genesis_with_bad_transaction_should_panic() {
 	.genesis_map();
 	let genesis_hash = insert_genesis_block(&mut storage);
 
-	let backend = InMemoryBackend::from(storage);
+	let backend = InMemoryBackend::from((storage, StateVersion::default()));
 	let (b1data, _b1hash) = block1(genesis_hash, &backend);
 	let backend_runtime_code = sp_state_machine::backend::BackendRuntimeCode::new(&backend);
 	let runtime_code = backend_runtime_code.runtime_code().expect("Code is part of the backend");
@@ -387,7 +411,7 @@ fn best_containing_with_genesis_block() {
 
 	assert_eq!(
 		genesis_hash.clone(),
-		block_on(longest_chain_select.finality_target(genesis_hash.clone(), None)).unwrap(),
+		block_on(longest_chain_select.finality_target(genesis_hash, None)).unwrap(),
 	);
 }
 
@@ -413,8 +437,8 @@ fn uncles_with_multiple_forks() {
 	// block tree:
 	// G -> A1 -> A2 -> A3 -> A4 -> A5
 	//      A1 -> B2 -> B3 -> B4
-	// 	          B2 -> C3
-	// 	    A1 -> D2
+	//	          B2 -> C3
+	//	    A1 -> D2
 	let mut client = substrate_test_runtime_client::new();
 
 	// G -> A1
@@ -817,7 +841,11 @@ fn best_containing_on_longest_chain_with_max_depth_higher_than_best() {
 
 #[test]
 fn import_with_justification() {
+	// block tree:
+	// G -> A1 -> A2 -> A3
 	let mut client = substrate_test_runtime_client::new();
+
+	let mut finality_notifications = client.finality_notification_stream();
 
 	// G -> A1
 	let a1 = client.new_block(Default::default()).unwrap().build().unwrap().block;
@@ -850,6 +878,10 @@ fn import_with_justification() {
 	assert_eq!(client.justifications(&BlockId::Hash(a1.hash())).unwrap(), None);
 
 	assert_eq!(client.justifications(&BlockId::Hash(a2.hash())).unwrap(), None);
+
+	finality_notification_check(&mut finality_notifications, &[a1.hash(), a2.hash()], &[]);
+	finality_notification_check(&mut finality_notifications, &[a3.hash()], &[]);
+	assert!(finality_notifications.try_next().is_err());
 }
 
 #[test]
@@ -859,6 +891,9 @@ fn importing_diverged_finalized_block_should_trigger_reorg() {
 	// G -> A1 -> A2
 	//   \
 	//    -> B1
+
+	let mut finality_notifications = client.finality_notification_stream();
+
 	let a1 = client
 		.new_block_at(&BlockId::Number(0), Default::default(), false)
 		.unwrap()
@@ -897,6 +932,9 @@ fn importing_diverged_finalized_block_should_trigger_reorg() {
 	assert_eq!(client.chain_info().best_hash, b1.hash());
 
 	assert_eq!(client.chain_info().finalized_hash, b1.hash());
+
+	finality_notification_check(&mut finality_notifications, &[b1.hash()], &[a2.hash()]);
+	assert!(finality_notifications.try_next().is_err());
 }
 
 #[test]
@@ -906,6 +944,9 @@ fn finalizing_diverged_block_should_trigger_reorg() {
 	// G -> A1 -> A2
 	//   \
 	//    -> B1 -> B2
+
+	let mut finality_notifications = client.finality_notification_stream();
+
 	let a1 = client
 		.new_block_at(&BlockId::Number(0), Default::default(), false)
 		.unwrap()
@@ -970,6 +1011,113 @@ fn finalizing_diverged_block_should_trigger_reorg() {
 	block_on(client.import(BlockOrigin::Own, b3.clone())).unwrap();
 
 	assert_eq!(client.chain_info().best_hash, b3.hash());
+
+	ClientExt::finalize_block(&client, BlockId::Hash(b3.hash()), None).unwrap();
+
+	finality_notification_check(&mut finality_notifications, &[b1.hash()], &[]);
+	finality_notification_check(&mut finality_notifications, &[b2.hash(), b3.hash()], &[a2.hash()]);
+	assert!(finality_notifications.try_next().is_err());
+}
+
+#[test]
+fn finality_notifications_content() {
+	sp_tracing::try_init_simple();
+	let (mut client, _select_chain) = TestClientBuilder::new().build_with_longest_chain();
+
+	//               -> D3 -> D4
+	// G -> A1 -> A2 -> A3
+	//   -> B1 -> B2
+	//   -> C1
+
+	let mut finality_notifications = client.finality_notification_stream();
+
+	let a1 = client
+		.new_block_at(&BlockId::Number(0), Default::default(), false)
+		.unwrap()
+		.build()
+		.unwrap()
+		.block;
+	block_on(client.import(BlockOrigin::Own, a1.clone())).unwrap();
+
+	let a2 = client
+		.new_block_at(&BlockId::Hash(a1.hash()), Default::default(), false)
+		.unwrap()
+		.build()
+		.unwrap()
+		.block;
+	block_on(client.import(BlockOrigin::Own, a2.clone())).unwrap();
+
+	let a3 = client
+		.new_block_at(&BlockId::Hash(a2.hash()), Default::default(), false)
+		.unwrap()
+		.build()
+		.unwrap()
+		.block;
+	block_on(client.import(BlockOrigin::Own, a3.clone())).unwrap();
+
+	let mut b1 = client.new_block_at(&BlockId::Number(0), Default::default(), false).unwrap();
+	// needed to make sure B1 gets a different hash from A1
+	b1.push_transfer(Transfer {
+		from: AccountKeyring::Alice.into(),
+		to: AccountKeyring::Ferdie.into(),
+		amount: 1,
+		nonce: 0,
+	})
+	.unwrap();
+	let b1 = b1.build().unwrap().block;
+	block_on(client.import(BlockOrigin::Own, b1.clone())).unwrap();
+
+	let b2 = client
+		.new_block_at(&BlockId::Hash(b1.hash()), Default::default(), false)
+		.unwrap()
+		.build()
+		.unwrap()
+		.block;
+	block_on(client.import(BlockOrigin::Own, b2.clone())).unwrap();
+
+	let mut c1 = client.new_block_at(&BlockId::Number(0), Default::default(), false).unwrap();
+	// needed to make sure B1 gets a different hash from A1
+	c1.push_transfer(Transfer {
+		from: AccountKeyring::Alice.into(),
+		to: AccountKeyring::Ferdie.into(),
+		amount: 2,
+		nonce: 0,
+	})
+	.unwrap();
+	let c1 = c1.build().unwrap().block;
+	block_on(client.import(BlockOrigin::Own, c1.clone())).unwrap();
+
+	let mut d3 = client
+		.new_block_at(&BlockId::Hash(a2.hash()), Default::default(), false)
+		.unwrap();
+	// needed to make sure D3 gets a different hash from A3
+	d3.push_transfer(Transfer {
+		from: AccountKeyring::Alice.into(),
+		to: AccountKeyring::Ferdie.into(),
+		amount: 2,
+		nonce: 0,
+	})
+	.unwrap();
+	let d3 = d3.build().unwrap().block;
+	block_on(client.import(BlockOrigin::Own, d3.clone())).unwrap();
+
+	let d4 = client
+		.new_block_at(&BlockId::Hash(d3.hash()), Default::default(), false)
+		.unwrap()
+		.build()
+		.unwrap()
+		.block;
+
+	// Postpone import to test behavior of import of finalized block.
+
+	ClientExt::finalize_block(&client, BlockId::Hash(a2.hash()), None).unwrap();
+
+	// Import and finalize D4
+	block_on(client.import_as_final(BlockOrigin::Own, d4.clone())).unwrap();
+
+	finality_notification_check(&mut finality_notifications, &[a1.hash(), a2.hash()], &[c1.hash()]);
+	finality_notification_check(&mut finality_notifications, &[d3.hash(), d4.hash()], &[b2.hash()]);
+	assert!(finality_notifications.try_next().is_err());
 }
 
 #[test]
@@ -1050,11 +1198,9 @@ fn doesnt_import_blocks_that_revert_finality() {
 	let backend = Arc::new(
 		Backend::new(
 			DatabaseSettings {
-				state_cache_size: 1 << 20,
-				state_cache_child_ratio: None,
-				state_pruning: PruningMode::ArchiveAll,
-				keep_blocks: KeepBlocks::All,
-				transaction_storage: TransactionStorageMode::BlockBody,
+				trie_cache_maximum_size: Some(1 << 20),
+				state_pruning: Some(PruningMode::ArchiveAll),
+				blocks_pruning: BlocksPruning::KeepAll,
 				source: DatabaseSource::RocksDb { path: tmp.path().into(), cache_size: 1024 },
 			},
 			u64::MAX,
@@ -1064,9 +1210,11 @@ fn doesnt_import_blocks_that_revert_finality() {
 
 	let mut client = TestClientBuilder::with_backend(backend).build();
 
+	let mut finality_notifications = client.finality_notification_stream();
+
 	//    -> C1
 	//   /
-	// G -> A1 -> A2
+	// G -> A1 -> A2 -> A3
 	//   \
 	//    -> B1 -> B2 -> B3
 
@@ -1145,6 +1293,21 @@ fn doesnt_import_blocks_that_revert_finality() {
 		ConsensusError::ClientImport(sp_blockchain::Error::NotInFinalizedChain.to_string());
 
 	assert_eq!(import_err.to_string(), expected_err.to_string());
+
+	let a3 = client
+		.new_block_at(&BlockId::Hash(a2.hash()), Default::default(), false)
+		.unwrap()
+		.build()
+		.unwrap()
+		.block;
+	block_on(client.import(BlockOrigin::Own, a3.clone())).unwrap();
+	ClientExt::finalize_block(&client, BlockId::Hash(a3.hash()), None).unwrap();
+
+	finality_notification_check(&mut finality_notifications, &[a1.hash(), a2.hash()], &[]);
+
+	finality_notification_check(&mut finality_notifications, &[a3.hash()], &[b2.hash()]);
+
+	assert!(finality_notifications.try_next().is_err());
 }
 
 #[test]
@@ -1170,9 +1333,9 @@ fn respects_block_rules() {
 			.block;
 
 		let params = BlockCheckParams {
-			hash: block_ok.hash().clone(),
+			hash: block_ok.hash(),
 			number: 0,
-			parent_hash: block_ok.header().parent_hash().clone(),
+			parent_hash: *block_ok.header().parent_hash(),
 			allow_missing_state: false,
 			allow_missing_parent: false,
 			import_existing: false,
@@ -1186,9 +1349,9 @@ fn respects_block_rules() {
 		let block_not_ok = block_not_ok.build().unwrap().block;
 
 		let params = BlockCheckParams {
-			hash: block_not_ok.hash().clone(),
+			hash: block_not_ok.hash(),
 			number: 0,
-			parent_hash: block_not_ok.header().parent_hash().clone(),
+			parent_hash: *block_not_ok.header().parent_hash(),
 			allow_missing_state: false,
 			allow_missing_parent: false,
 			import_existing: false,
@@ -1209,15 +1372,15 @@ fn respects_block_rules() {
 		let block_ok = block_ok.build().unwrap().block;
 
 		let params = BlockCheckParams {
-			hash: block_ok.hash().clone(),
+			hash: block_ok.hash(),
 			number: 1,
-			parent_hash: block_ok.header().parent_hash().clone(),
+			parent_hash: *block_ok.header().parent_hash(),
 			allow_missing_state: false,
 			allow_missing_parent: false,
 			import_existing: false,
 		};
 		if record_only {
-			fork_rules.push((1, block_ok.hash().clone()));
+			fork_rules.push((1, block_ok.hash()));
 		}
 		assert_eq!(block_on(client.check_block(params)).unwrap(), ImportResult::imported(false));
 
@@ -1228,9 +1391,9 @@ fn respects_block_rules() {
 		let block_not_ok = block_not_ok.build().unwrap().block;
 
 		let params = BlockCheckParams {
-			hash: block_not_ok.hash().clone(),
+			hash: block_not_ok.hash(),
 			number: 1,
-			parent_hash: block_not_ok.header().parent_hash().clone(),
+			parent_hash: *block_not_ok.header().parent_hash(),
 			allow_missing_state: false,
 			allow_missing_parent: false,
 			import_existing: false,
@@ -1261,11 +1424,9 @@ fn returns_status_for_pruned_blocks() {
 	let backend = Arc::new(
 		Backend::new(
 			DatabaseSettings {
-				state_cache_size: 1 << 20,
-				state_cache_child_ratio: None,
-				state_pruning: PruningMode::keep_blocks(1),
-				keep_blocks: KeepBlocks::All,
-				transaction_storage: TransactionStorageMode::BlockBody,
+				trie_cache_maximum_size: Some(1 << 20),
+				state_pruning: Some(PruningMode::blocks_pruning(1)),
+				blocks_pruning: BlocksPruning::KeepFinalized,
 				source: DatabaseSource::RocksDb { path: tmp.path().into(), cache_size: 1024 },
 			},
 			u64::MAX,
@@ -1295,9 +1456,9 @@ fn returns_status_for_pruned_blocks() {
 	let b1 = b1.build().unwrap().block;
 
 	let check_block_a1 = BlockCheckParams {
-		hash: a1.hash().clone(),
+		hash: a1.hash(),
 		number: 0,
-		parent_hash: a1.header().parent_hash().clone(),
+		parent_hash: *a1.header().parent_hash(),
 		allow_missing_state: false,
 		allow_missing_parent: false,
 		import_existing: false,
@@ -1332,9 +1493,9 @@ fn returns_status_for_pruned_blocks() {
 	block_on(client.import_as_final(BlockOrigin::Own, a2.clone())).unwrap();
 
 	let check_block_a2 = BlockCheckParams {
-		hash: a2.hash().clone(),
+		hash: a2.hash(),
 		number: 1,
-		parent_hash: a1.header().parent_hash().clone(),
+		parent_hash: *a1.header().parent_hash(),
 		allow_missing_state: false,
 		allow_missing_parent: false,
 		import_existing: false,
@@ -1366,9 +1527,9 @@ fn returns_status_for_pruned_blocks() {
 
 	block_on(client.import_as_final(BlockOrigin::Own, a3.clone())).unwrap();
 	let check_block_a3 = BlockCheckParams {
-		hash: a3.hash().clone(),
+		hash: a3.hash(),
 		number: 2,
-		parent_hash: a2.header().parent_hash().clone(),
+		parent_hash: *a2.header().parent_hash(),
 		allow_missing_state: false,
 		allow_missing_parent: false,
 		import_existing: false,
@@ -1401,9 +1562,9 @@ fn returns_status_for_pruned_blocks() {
 	);
 
 	let mut check_block_b1 = BlockCheckParams {
-		hash: b1.hash().clone(),
+		hash: b1.hash(),
 		number: 0,
-		parent_hash: b1.header().parent_hash().clone(),
+		parent_hash: *b1.header().parent_hash(),
 		allow_missing_state: false,
 		allow_missing_parent: false,
 		import_existing: false,
@@ -1434,7 +1595,7 @@ fn storage_keys_iter_prefix_and_start_key_works() {
 		.build();
 
 	let child_root = b":child_storage:default:child".to_vec();
-	let prefix = StorageKey(hex!("3a").to_vec());
+	let prefix = StorageKey(array_bytes::hex2bytes_unchecked("3a"));
 	let child_prefix = StorageKey(b"sec".to_vec());
 
 	let res: Vec<_> = client
@@ -1444,25 +1605,29 @@ fn storage_keys_iter_prefix_and_start_key_works() {
 		.collect();
 	assert_eq!(
 		res,
-		[child_root.clone(), hex!("3a636f6465").to_vec(), hex!("3a686561707061676573").to_vec(),]
+		[
+			child_root.clone(),
+			array_bytes::hex2bytes_unchecked("3a636f6465"),
+			array_bytes::hex2bytes_unchecked("3a686561707061676573"),
+		]
 	);
 
 	let res: Vec<_> = client
 		.storage_keys_iter(
 			&BlockId::Number(0),
 			Some(&prefix),
-			Some(&StorageKey(hex!("3a636f6465").to_vec())),
+			Some(&StorageKey(array_bytes::hex2bytes_unchecked("3a636f6465"))),
 		)
 		.unwrap()
 		.map(|x| x.0)
 		.collect();
-	assert_eq!(res, [hex!("3a686561707061676573").to_vec()]);
+	assert_eq!(res, [array_bytes::hex2bytes_unchecked("3a686561707061676573")]);
 
 	let res: Vec<_> = client
 		.storage_keys_iter(
 			&BlockId::Number(0),
 			Some(&prefix),
-			Some(&StorageKey(hex!("3a686561707061676573").to_vec())),
+			Some(&StorageKey(array_bytes::hex2bytes_unchecked("3a686561707061676573"))),
 		)
 		.unwrap()
 		.map(|x| x.0)
@@ -1493,13 +1658,13 @@ fn storage_keys_iter_prefix_and_start_key_works() {
 fn storage_keys_iter_works() {
 	let client = substrate_test_runtime_client::new();
 
-	let prefix = StorageKey(hex!("").to_vec());
+	let prefix = StorageKey(array_bytes::hex2bytes_unchecked(""));
 
 	let res: Vec<_> = client
 		.storage_keys_iter(&BlockId::Number(0), Some(&prefix), None)
 		.unwrap()
-		.take(8)
-		.map(|x| hex::encode(&x.0))
+		.take(9)
+		.map(|x| array_bytes::bytes2hex("", &x.0))
 		.collect();
 	assert_eq!(
 		res,
@@ -1510,6 +1675,7 @@ fn storage_keys_iter_works() {
 			"1a560ecfd2a62c2b8521ef149d0804eb621050e3988ed97dca55f0d7c3e6aa34",
 			"1d66850d32002979d67dd29dc583af5b2ae2a1f71c1f35ad90fff122be7a3824",
 			"237498b98d8803334286e9f0483ef513098dd3c1c22ca21c4dc155b4ef6cc204",
+			"26aa394eea5630e07c48ae0c9558cef75e0621c4869aa60c02be9adcc98a0d1d",
 			"29b9db10ec5bf7907d8f74b5e60aa8140c4fbdd8127a1ee5600cb98e5ec01729",
 			"3a636f6465",
 		]
@@ -1519,11 +1685,11 @@ fn storage_keys_iter_works() {
 		.storage_keys_iter(
 			&BlockId::Number(0),
 			Some(&prefix),
-			Some(&StorageKey(hex!("3a636f6465").to_vec())),
+			Some(&StorageKey(array_bytes::hex2bytes_unchecked("3a636f6465"))),
 		)
 		.unwrap()
 		.take(7)
-		.map(|x| hex::encode(&x.0))
+		.map(|x| array_bytes::bytes2hex("", &x.0))
 		.collect();
 	assert_eq!(
 		res,
@@ -1534,7 +1700,7 @@ fn storage_keys_iter_works() {
 			"5c2d5fda66373dabf970e4fb13d277ce91c5233473321129d32b5a8085fa8133",
 			"6644b9b8bc315888ac8e41a7968dc2b4141a5403c58acdf70b7e8f7e07bf5081",
 			"66484000ed3f75c95fc7b03f39c20ca1e1011e5999278247d3b2f5e3c3273808",
-			"79c07e2b1d2e2abfd4855b936617eeff5e0621c4869aa60c02be9adcc98a0d1d",
+			"7d5007603a7f5dd729d51d93cf695d6465789443bb967c0d1fe270e388c96eaa",
 		]
 	);
 
@@ -1542,22 +1708,22 @@ fn storage_keys_iter_works() {
 		.storage_keys_iter(
 			&BlockId::Number(0),
 			Some(&prefix),
-			Some(&StorageKey(
-				hex!("79c07e2b1d2e2abfd4855b936617eeff5e0621c4869aa60c02be9adcc98a0d1d").to_vec(),
-			)),
+			Some(&StorageKey(array_bytes::hex2bytes_unchecked(
+				"7d5007603a7f5dd729d51d93cf695d6465789443bb967c0d1fe270e388c96eaa",
+			))),
 		)
 		.unwrap()
 		.take(5)
-		.map(|x| hex::encode(x.0))
+		.map(|x| array_bytes::bytes2hex("", &x.0))
 		.collect();
 	assert_eq!(
 		res,
 		[
-			"7d5007603a7f5dd729d51d93cf695d6465789443bb967c0d1fe270e388c96eaa",
 			"811ecfaadcf5f2ee1d67393247e2f71a1662d433e8ce7ff89fb0d4aa9561820b",
 			"a93d74caa7ec34ea1b04ce1e5c090245f867d333f0f88278a451e45299654dc5",
 			"a9ee1403384afbfc13f13be91ff70bfac057436212e53b9733914382ac942892",
 			"cf722c0832b5231d35e29f319ff27389f5032bfc7bfc3ba5ed7839f2042fb99f",
+			"e3b47b6c84c0493481f97c5197d2554f",
 		]
 	);
 }

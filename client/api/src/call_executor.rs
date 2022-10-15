@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2017-2021 Parity Technologies (UK) Ltd.
+// Copyright (C) 2017-2022 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -18,13 +18,11 @@
 
 //! A method call executor interface.
 
-use codec::{Decode, Encode};
-use sc_executor::RuntimeVersion;
-use sp_core::NativeOrEncoded;
+use sc_executor::{RuntimeVersion, RuntimeVersionOf};
 use sp_externalities::Extensions;
 use sp_runtime::{generic::BlockId, traits::Block as BlockT};
 use sp_state_machine::{ExecutionManager, ExecutionStrategy, OverlayedChanges, StorageProof};
-use std::{cell::RefCell, panic::UnwindSafe, result};
+use std::cell::RefCell;
 
 use crate::execution_extensions::ExecutionExtensions;
 use sp_api::{ProofRecorder, StorageTransactionCache};
@@ -42,7 +40,7 @@ pub trait ExecutorProvider<Block: BlockT> {
 }
 
 /// Method call executor.
-pub trait CallExecutor<B: BlockT> {
+pub trait CallExecutor<B: BlockT>: RuntimeVersionOf {
 	/// Externalities error type.
 	type Error: sp_state_machine::Error;
 
@@ -68,11 +66,9 @@ pub trait CallExecutor<B: BlockT> {
 	/// of the execution context.
 	fn contextual_call<
 		EM: Fn(
-			Result<NativeOrEncoded<R>, Self::Error>,
-			Result<NativeOrEncoded<R>, Self::Error>,
-		) -> Result<NativeOrEncoded<R>, Self::Error>,
-		R: Encode + Decode + PartialEq,
-		NC: FnOnce() -> result::Result<R, sp_api::ApiError> + UnwindSafe,
+			Result<Vec<u8>, Self::Error>,
+			Result<Vec<u8>, Self::Error>,
+		) -> Result<Vec<u8>, Self::Error>,
 	>(
 		&self,
 		at: &BlockId<B>,
@@ -85,10 +81,9 @@ pub trait CallExecutor<B: BlockT> {
 			>,
 		>,
 		execution_manager: ExecutionManager<EM>,
-		native_call: Option<NC>,
 		proof_recorder: &Option<ProofRecorder<B>>,
 		extensions: Option<Extensions>,
-	) -> sp_blockchain::Result<NativeOrEncoded<R>>
+	) -> sp_blockchain::Result<Vec<u8>>
 	where
 		ExecutionManager<EM>: Clone;
 

@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2019-2021 Parity Technologies (UK) Ltd.
+// Copyright (C) 2019-2022 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -32,22 +32,16 @@ pub use aux_schema::{check_equivocation, MAX_SLOT_CAPACITY, PRUNING_BOUND};
 pub use slots::SlotInfo;
 use slots::Slots;
 
-use codec::{Decode, Encode};
 use futures::{future::Either, Future, TryFutureExt};
 use futures_timer::Delay;
-use log::{debug, error, info, warn};
+use log::{debug, info, warn};
 use sc_consensus::{BlockImport, JustificationSyncLink};
 use sc_telemetry::{telemetry, TelemetryHandle, CONSENSUS_DEBUG, CONSENSUS_INFO, CONSENSUS_WARN};
-use sp_api::{ApiRef, ProvideRuntimeApi};
 use sp_arithmetic::traits::BaseArithmetic;
-use sp_consensus::{CanAuthorWith, Proposer, SelectChain, SlotData, SyncOracle};
-use sp_consensus_slots::Slot;
+use sp_consensus::{Proposal, Proposer, SelectChain, SyncOracle};
+use sp_consensus_slots::{Slot, SlotDuration};
 use sp_inherents::CreateInherentDataProviders;
-use sp_runtime::{
-	generic::BlockId,
-	traits::{Block as BlockT, HashFor, Header as HeaderT},
-};
-use sp_timestamp::Timestamp;
+use sp_runtime::traits::{Block as BlockT, HashFor, Header as HeaderT};
 use std::{fmt::Debug, ops::Deref, time::Duration};
 
 /// The changes that need to applied to the storage to create the state for a block.
@@ -105,10 +99,10 @@ pub trait SimpleSlotWorker<B: BlockT> {
 	type Proposer: Proposer<B> + Send;
 
 	/// Data associated with a slot claim.
-	type Claim: Send + 'static;
+	type Claim: Send + Sync + 'static;
 
-	/// Epoch data necessary for authoring.
-	type EpochData: Send + Sync + 'static;
+	/// Auxiliary data necessary for authoring.
+	type AuxData: Send + Sync + 'static;
 
 	/// The logging target to use when logging messages.
 	fn logging_target(&self) -> &'static str;
@@ -116,52 +110,44 @@ pub trait SimpleSlotWorker<B: BlockT> {
 	/// A handle to a `BlockImport`.
 	fn block_import(&mut self) -> &mut Self::BlockImport;
 
-	/// Returns the epoch data necessary for authoring. For time-dependent epochs,
-	/// use the provided slot number as a canonical source of time.
-	fn epoch_data(
+	/// Returns the auxiliary data necessary for authoring.
+	fn aux_data(
 		&self,
 		header: &B::Header,
 		slot: Slot,
-	) -> Result<Self::EpochData, sp_consensus::Error>;
+	) -> Result<Self::AuxData, sp_consensus::Error>;
 
-	/// Returns the number of authorities given the epoch data.
+	/// Returns the number of authorities.
 	/// None indicate that the authorities information is incomplete.
-	fn authorities_len(&self, epoch_data: &Self::EpochData) -> Option<usize>;
+	fn authorities_len(&self, aux_data: &Self::AuxData) -> Option<usize>;
 
 	/// Tries to claim the given slot, returning an object with claim data if successful.
 	async fn claim_slot(
 		&self,
 		header: &B::Header,
 		slot: Slot,
-		epoch_data: &Self::EpochData,
+		aux_data: &Self::AuxData,
 	) -> Option<Self::Claim>;
 
 	/// Notifies the given slot. Similar to `claim_slot`, but will be called no matter whether we
 	/// need to author blocks or not.
-	fn notify_slot(&self, _header: &B::Header, _slot: Slot, _epoch_data: &Self::EpochData) {}
+	fn notify_slot(&self, _header: &B::Header, _slot: Slot, _aux_data: &Self::AuxData) {}
 
 	/// Return the pre digest data to include in a block authored with the given claim.
 	fn pre_digest_data(&self, slot: Slot, claim: &Self::Claim) -> Vec<sp_runtime::DigestItem>;
 
 	/// Returns a function which produces a `BlockImportParams`.
-	fn block_import_params(
+	async fn block_import_params(
 		&self,
-	) -> Box<
-		dyn Fn(
-				B::Header,
-				&B::Hash,
-				Vec<B::Extrinsic>,
-				StorageChanges<<Self::BlockImport as BlockImport<B>>::Transaction, B>,
-				Self::Claim,
-				Self::EpochData,
-			) -> Result<
-				sc_consensus::BlockImportParams<
-					B,
-					<Self::BlockImport as BlockImport<B>>::Transaction,
-				>,
-				sp_consensus::Error,
-			> + Send
-			+ 'static,
+		header: B::Header,
+		header_hash: &B::Hash,
+		body: Vec<B::Extrinsic>,
+		storage_changes: StorageChanges<<Self::BlockImport as BlockImport<B>>::Transaction, B>,
+		public: Self::Claim,
+		epoch: Self::AuxData,
+	) -> Result<
+		sc_consensus::BlockImportParams<B, <Self::BlockImport as BlockImport<B>>::Transaction>,
+		sp_consensus::Error,
 	>;
 
 	/// Whether to force authoring if offline.
@@ -192,114 +178,25 @@ pub trait SimpleSlotWorker<B: BlockT> {
 	/// Remaining duration for proposing.
 	fn proposing_remaining_duration(&self, slot_info: &SlotInfo<B>) -> Duration;
 
-	/// Implements [`SlotWorker::on_slot`].
-	async fn on_slot(
+	/// Propose a block by `Proposer`.
+	async fn propose(
 		&mut self,
+		proposer: Self::Proposer,
+		claim: &Self::Claim,
 		slot_info: SlotInfo<B>,
-	) -> Option<SlotResult<B, <Self::Proposer as Proposer<B>>::Proof>>
-	where
-		Self: Sync,
-	{
-		let (timestamp, slot) = (slot_info.timestamp, slot_info.slot);
+		proposing_remaining: Delay,
+	) -> Option<
+		Proposal<
+			B,
+			<Self::Proposer as Proposer<B>>::Transaction,
+			<Self::Proposer as Proposer<B>>::Proof,
+		>,
+	> {
+		let slot = slot_info.slot;
 		let telemetry = self.telemetry();
 		let logging_target = self.logging_target();
-
 		let proposing_remaining_duration = self.proposing_remaining_duration(&slot_info);
-
-		let proposing_remaining = if proposing_remaining_duration == Duration::default() {
-			debug!(
-				target: logging_target,
-				"Skipping proposal slot {} since there's no time left to propose", slot,
-			);
-
-			return None
-		} else {
-			Delay::new(proposing_remaining_duration)
-		};
-
-		let epoch_data = match self.epoch_data(&slot_info.chain_head, slot) {
-			Ok(epoch_data) => epoch_data,
-			Err(err) => {
-				warn!(
-					target: logging_target,
-					"Unable to fetch epoch data at block {:?}: {:?}",
-					slot_info.chain_head.hash(),
-					err,
-				);
-
-				telemetry!(
-					telemetry;
-					CONSENSUS_WARN;
-					"slots.unable_fetching_authorities";
-					"slot" => ?slot_info.chain_head.hash(),
-					"err" => ?err,
-				);
-
-				return None
-			},
-		};
-
-		self.notify_slot(&slot_info.chain_head, slot, &epoch_data);
-
-		let authorities_len = self.authorities_len(&epoch_data);
-
-		if !self.force_authoring() &&
-			self.sync_oracle().is_offline() &&
-			authorities_len.map(|a| a > 1).unwrap_or(false)
-		{
-			debug!(target: logging_target, "Skipping proposal slot. Waiting for the network.");
-			telemetry!(
-				telemetry;
-				CONSENSUS_DEBUG;
-				"slots.skipping_proposal_slot";
-				"authorities_len" => authorities_len,
-			);
-
-			return None
-		}
-
-		let claim = self.claim_slot(&slot_info.chain_head, slot, &epoch_data).await?;
-
-		if self.should_backoff(slot, &slot_info.chain_head) {
-			return None
-		}
-
-		debug!(
-			target: self.logging_target(),
-			"Starting authorship at slot {}; timestamp = {}",
-			slot,
-			*timestamp,
-		);
-
-		telemetry!(
-			telemetry;
-			CONSENSUS_DEBUG;
-			"slots.starting_authorship";
-			"slot_num" => *slot,
-			"timestamp" => *timestamp,
-		);
-
-		let proposer = match self.proposer(&slot_info.chain_head).await {
-			Ok(p) => p,
-			Err(err) => {
-				warn!(
-					target: logging_target,
-					"Unable to author block in slot {:?}: {:?}", slot, err,
-				);
-
-				telemetry!(
-					telemetry;
-					CONSENSUS_WARN;
-					"slots.unable_authoring_block";
-					"slot" => *slot,
-					"err" => ?err
-				);
-
-				return None
-			},
-		};
-
-		let logs = self.pre_digest_data(slot, &claim);
+		let logs = self.pre_digest_data(slot, claim);
 
 		// deadline our production to 98% of the total time left for proposing. As we deadline
 		// the proposing below to the same total time left, the 2% margin should be enough for
@@ -311,12 +208,12 @@ pub trait SimpleSlotWorker<B: BlockT> {
 				proposing_remaining_duration.mul_f32(0.98),
 				None,
 			)
-			.map_err(|e| sp_consensus::Error::ClientImport(format!("{:?}", e)));
+			.map_err(|e| sp_consensus::Error::ClientImport(e.to_string()));
 
 		let proposal = match futures::future::select(proposing, proposing_remaining).await {
 			Either::Left((Ok(p), _)) => p,
 			Either::Left((Err(err), _)) => {
-				warn!(target: logging_target, "Proposing failed: {:?}", err);
+				warn!(target: logging_target, "Proposing failed: {}", err);
 
 				return None
 			},
@@ -342,8 +239,103 @@ pub trait SimpleSlotWorker<B: BlockT> {
 			},
 		};
 
-		let block_import_params_maker = self.block_import_params();
-		let block_import = self.block_import();
+		Some(proposal)
+	}
+
+	/// Implements [`SlotWorker::on_slot`].
+	async fn on_slot(
+		&mut self,
+		slot_info: SlotInfo<B>,
+	) -> Option<SlotResult<B, <Self::Proposer as Proposer<B>>::Proof>>
+	where
+		Self: Sync,
+	{
+		let slot = slot_info.slot;
+		let telemetry = self.telemetry();
+		let logging_target = self.logging_target();
+
+		let proposing_remaining_duration = self.proposing_remaining_duration(&slot_info);
+
+		let proposing_remaining = if proposing_remaining_duration == Duration::default() {
+			debug!(
+				target: logging_target,
+				"Skipping proposal slot {} since there's no time left to propose", slot,
+			);
+
+			return None
+		} else {
+			Delay::new(proposing_remaining_duration)
+		};
+
+		let aux_data = match self.aux_data(&slot_info.chain_head, slot) {
+			Ok(aux_data) => aux_data,
+			Err(err) => {
+				warn!(
+					target: logging_target,
+					"Unable to fetch auxiliary data for block {:?}: {}",
+					slot_info.chain_head.hash(),
+					err,
+				);
+
+				telemetry!(
+					telemetry;
+					CONSENSUS_WARN;
+					"slots.unable_fetching_authorities";
+					"slot" => ?slot_info.chain_head.hash(),
+					"err" => ?err,
+				);
+
+				return None
+			},
+		};
+
+		self.notify_slot(&slot_info.chain_head, slot, &aux_data);
+
+		let authorities_len = self.authorities_len(&aux_data);
+
+		if !self.force_authoring() &&
+			self.sync_oracle().is_offline() &&
+			authorities_len.map(|a| a > 1).unwrap_or(false)
+		{
+			debug!(target: logging_target, "Skipping proposal slot. Waiting for the network.");
+			telemetry!(
+				telemetry;
+				CONSENSUS_DEBUG;
+				"slots.skipping_proposal_slot";
+				"authorities_len" => authorities_len,
+			);
+
+			return None
+		}
+
+		let claim = self.claim_slot(&slot_info.chain_head, slot, &aux_data).await?;
+
+		if self.should_backoff(slot, &slot_info.chain_head) {
+			return None
+		}
+
+		debug!(target: logging_target, "Starting authorship at slot: {slot}");
+
+		telemetry!(telemetry; CONSENSUS_DEBUG; "slots.starting_authorship"; "slot_num" => slot);
+
+		let proposer = match self.proposer(&slot_info.chain_head).await {
+			Ok(p) => p,
+			Err(err) => {
+				warn!(target: logging_target, "Unable to author block in slot {slot:?}: {err}");
+
+				telemetry!(
+					telemetry;
+					CONSENSUS_WARN;
+					"slots.unable_authoring_block";
+					"slot" => *slot,
+					"err" => ?err
+				);
+
+				return None
+			},
+		};
+
+		let proposal = self.propose(proposer, &claim, slot_info, proposing_remaining).await?;
 
 		let (block, storage_proof) = (proposal.block, proposal.proof);
 		let (header, body) = block.deconstruct();
@@ -351,17 +343,20 @@ pub trait SimpleSlotWorker<B: BlockT> {
 		let header_hash = header.hash();
 		let parent_hash = *header.parent_hash();
 
-		let block_import_params = match block_import_params_maker(
-			header,
-			&header_hash,
-			body.clone(),
-			proposal.storage_changes,
-			claim,
-			epoch_data,
-		) {
+		let block_import_params = match self
+			.block_import_params(
+				header,
+				&header_hash,
+				body.clone(),
+				proposal.storage_changes,
+				claim,
+				aux_data,
+			)
+			.await
+		{
 			Ok(bi) => bi,
 			Err(err) => {
-				warn!(target: logging_target, "Failed to create block import params: {:?}", err);
+				warn!(target: logging_target, "Failed to create block import params: {}", err);
 
 				return None
 			},
@@ -385,7 +380,7 @@ pub trait SimpleSlotWorker<B: BlockT> {
 		);
 
 		let header = block_import_params.post_header();
-		match block_import.import_block(block_import_params, Default::default()).await {
+		match self.block_import().import_block(block_import_params, Default::default()).await {
 			Ok(res) => {
 				res.handle_justification(
 					&header.hash(),
@@ -396,7 +391,7 @@ pub trait SimpleSlotWorker<B: BlockT> {
 			Err(err) => {
 				warn!(
 					target: logging_target,
-					"Error with block built on {:?}: {:?}", parent_hash, err,
+					"Error with block built on {:?}: {}", parent_hash, err,
 				);
 
 				telemetry!(
@@ -413,90 +408,82 @@ pub trait SimpleSlotWorker<B: BlockT> {
 	}
 }
 
+/// A type that implements [`SlotWorker`] for a type that implements [`SimpleSlotWorker`].
+///
+/// This is basically a workaround for Rust not supporting specialization. Otherwise we could
+/// implement [`SlotWorker`] for any `T` that implements [`SimpleSlotWorker`], but currently
+/// that would prevent downstream users to implement [`SlotWorker`] for their own types.
+pub struct SimpleSlotWorkerToSlotWorker<T>(pub T);
+
 #[async_trait::async_trait]
-impl<B: BlockT, T: SimpleSlotWorker<B> + Send + Sync>
-	SlotWorker<B, <T::Proposer as Proposer<B>>::Proof> for T
+impl<T: SimpleSlotWorker<B> + Send + Sync, B: BlockT>
+	SlotWorker<B, <T::Proposer as Proposer<B>>::Proof> for SimpleSlotWorkerToSlotWorker<T>
 {
 	async fn on_slot(
 		&mut self,
 		slot_info: SlotInfo<B>,
 	) -> Option<SlotResult<B, <T::Proposer as Proposer<B>>::Proof>> {
-		SimpleSlotWorker::on_slot(self, slot_info).await
+		self.0.on_slot(slot_info).await
 	}
 }
 
 /// Slot specific extension that the inherent data provider needs to implement.
 pub trait InherentDataProviderExt {
-	/// The current timestamp that will be found in the
-	/// [`InherentData`](`sp_inherents::InherentData`).
-	fn timestamp(&self) -> Timestamp;
-
 	/// The current slot that will be found in the [`InherentData`](`sp_inherents::InherentData`).
 	fn slot(&self) -> Slot;
 }
 
 /// Small macro for implementing `InherentDataProviderExt` for inherent data provider tuple.
 macro_rules! impl_inherent_data_provider_ext_tuple {
-	( T, S $(, $TN:ident)* $( , )?) => {
-		impl<T, S, $( $TN ),*>  InherentDataProviderExt for (T, S, $($TN),*)
+	( S $(, $TN:ident)* $( , )?) => {
+		impl<S, $( $TN ),*>  InherentDataProviderExt for (S, $($TN),*)
 		where
-			T: Deref<Target = Timestamp>,
 			S: Deref<Target = Slot>,
 		{
-			fn timestamp(&self) -> Timestamp {
-				*self.0.deref()
-			}
-
 			fn slot(&self) -> Slot {
-				*self.1.deref()
+				*self.0.deref()
 			}
 		}
 	}
 }
 
-impl_inherent_data_provider_ext_tuple!(T, S);
-impl_inherent_data_provider_ext_tuple!(T, S, A);
-impl_inherent_data_provider_ext_tuple!(T, S, A, B);
-impl_inherent_data_provider_ext_tuple!(T, S, A, B, C);
-impl_inherent_data_provider_ext_tuple!(T, S, A, B, C, D);
-impl_inherent_data_provider_ext_tuple!(T, S, A, B, C, D, E);
-impl_inherent_data_provider_ext_tuple!(T, S, A, B, C, D, E, F);
-impl_inherent_data_provider_ext_tuple!(T, S, A, B, C, D, E, F, G);
-impl_inherent_data_provider_ext_tuple!(T, S, A, B, C, D, E, F, G, H);
-impl_inherent_data_provider_ext_tuple!(T, S, A, B, C, D, E, F, G, H, I);
-impl_inherent_data_provider_ext_tuple!(T, S, A, B, C, D, E, F, G, H, I, J);
+impl_inherent_data_provider_ext_tuple!(S);
+impl_inherent_data_provider_ext_tuple!(S, A);
+impl_inherent_data_provider_ext_tuple!(S, A, B);
+impl_inherent_data_provider_ext_tuple!(S, A, B, C);
+impl_inherent_data_provider_ext_tuple!(S, A, B, C, D);
+impl_inherent_data_provider_ext_tuple!(S, A, B, C, D, E);
+impl_inherent_data_provider_ext_tuple!(S, A, B, C, D, E, F);
+impl_inherent_data_provider_ext_tuple!(S, A, B, C, D, E, F, G);
+impl_inherent_data_provider_ext_tuple!(S, A, B, C, D, E, F, G, H);
+impl_inherent_data_provider_ext_tuple!(S, A, B, C, D, E, F, G, H, I);
+impl_inherent_data_provider_ext_tuple!(S, A, B, C, D, E, F, G, H, I, J);
 
 /// Start a new slot worker.
 ///
 /// Every time a new slot is triggered, `worker.on_slot` is called and the future it returns is
 /// polled until completion, unless we are major syncing.
-pub async fn start_slot_worker<B, C, W, T, SO, CIDP, CAW, Proof>(
-	slot_duration: SlotDuration<T>,
+pub async fn start_slot_worker<B, C, W, SO, CIDP, Proof>(
+	slot_duration: SlotDuration,
 	client: C,
 	mut worker: W,
-	mut sync_oracle: SO,
+	sync_oracle: SO,
 	create_inherent_data_providers: CIDP,
-	can_author_with: CAW,
 ) where
 	B: BlockT,
 	C: SelectChain<B>,
 	W: SlotWorker<B, Proof>,
 	SO: SyncOracle + Send,
-	T: SlotData + Clone,
 	CIDP: CreateInherentDataProviders<B, ()> + Send,
 	CIDP::InherentDataProviders: InherentDataProviderExt + Send,
-	CAW: CanAuthorWith<B> + Send,
 {
-	let SlotDuration(slot_duration) = slot_duration;
-
-	let mut slots =
-		Slots::new(slot_duration.slot_duration(), create_inherent_data_providers, client);
+	let mut slots = Slots::new(slot_duration.as_duration(), create_inherent_data_providers, client);
 
 	loop {
 		let slot_info = match slots.next_slot().await {
 			Ok(r) => r,
 			Err(e) => {
-				warn!(target: "slots", "Error while polling for next slot: {:?}", e);
+				warn!(target: "slots", "Error while polling for next slot: {}", e);
 				return
 			},
 		};
@@ -506,19 +493,7 @@ pub async fn start_slot_worker<B, C, W, T, SO, CIDP, CAW, Proof>(
 			continue
 		}
 
-		if let Err(err) =
-			can_author_with.can_author_with(&BlockId::Hash(slot_info.chain_head.hash()))
-		{
-			warn!(
-				target: "slots",
-				"Unable to author block in slot {},. `can_author_with` returned: {} \
-				Probably a node update is required!",
-				slot_info.slot,
-				err,
-			);
-		} else {
-			let _ = worker.on_slot(slot_info).await;
-		}
+		let _ = worker.on_slot(slot_info).await;
 	}
 }
 
@@ -532,89 +507,6 @@ pub enum CheckedHeader<H, S> {
 	///
 	/// Includes the digest item that encoded the seal.
 	Checked(H, S),
-}
-
-#[derive(Debug, thiserror::Error)]
-#[allow(missing_docs)]
-pub enum Error<T>
-where
-	T: Debug,
-{
-	#[error("Slot duration is invalid: {0:?}")]
-	SlotDurationInvalid(SlotDuration<T>),
-}
-
-/// A slot duration. Create with [`get_or_compute`](Self::get_or_compute).
-// The internal member should stay private here to maintain invariants of
-// `get_or_compute`.
-#[derive(Clone, Copy, Debug, Encode, Decode, Hash, PartialOrd, Ord, PartialEq, Eq)]
-pub struct SlotDuration<T>(T);
-
-impl<T> Deref for SlotDuration<T> {
-	type Target = T;
-	fn deref(&self) -> &T {
-		&self.0
-	}
-}
-
-impl<T: SlotData> SlotData for SlotDuration<T> {
-	fn slot_duration(&self) -> std::time::Duration {
-		self.0.slot_duration()
-	}
-
-	const SLOT_KEY: &'static [u8] = T::SLOT_KEY;
-}
-
-impl<T: Clone + Send + Sync + 'static> SlotDuration<T> {
-	/// Either fetch the slot duration from disk or compute it from the
-	/// genesis state.
-	///
-	/// `slot_key` is marked as `'static`, as it should really be a
-	/// compile-time constant.
-	pub fn get_or_compute<B: BlockT, C, CB>(client: &C, cb: CB) -> sp_blockchain::Result<Self>
-	where
-		C: sc_client_api::backend::AuxStore + sc_client_api::UsageProvider<B>,
-		C: ProvideRuntimeApi<B>,
-		CB: FnOnce(ApiRef<C::Api>, &BlockId<B>) -> sp_blockchain::Result<T>,
-		T: SlotData + Encode + Decode + Debug,
-	{
-		let slot_duration = match client.get_aux(T::SLOT_KEY)? {
-			Some(v) => <T as codec::Decode>::decode(&mut &v[..]).map(SlotDuration).map_err(|_| {
-				sp_blockchain::Error::Backend({
-					error!(target: "slots", "slot duration kept in invalid format");
-					"slot duration kept in invalid format".to_string()
-				})
-			}),
-			None => {
-				let best_hash = client.usage_info().chain.best_hash;
-				let slot_duration = cb(client.runtime_api(), &BlockId::hash(best_hash))?;
-
-				info!(
-					"⏱  Loaded block-time = {:?} from block {:?}",
-					slot_duration.slot_duration(),
-					best_hash,
-				);
-
-				slot_duration
-					.using_encoded(|s| client.insert_aux(&[(T::SLOT_KEY, &s[..])], &[]))?;
-
-				Ok(SlotDuration(slot_duration))
-			},
-		}?;
-
-		if slot_duration.slot_duration() == Default::default() {
-			return Err(sp_blockchain::Error::Application(Box::new(Error::SlotDurationInvalid(
-				slot_duration,
-			))))
-		}
-
-		Ok(slot_duration)
-	}
-
-	/// Returns slot data value.
-	pub fn get(&self) -> T {
-		self.0.clone()
-	}
 }
 
 /// A unit type wrapper to express the proportion of a slot.
@@ -698,7 +590,7 @@ pub fn proposing_remaining_duration<Block: BlockT>(
 		// if we defined a maximum portion of the slot for proposal then we must make sure the
 		// lenience doesn't go over it
 		let lenient_proposing_duration =
-			if let Some(ref max_block_proposal_slot_portion) = max_block_proposal_slot_portion {
+			if let Some(max_block_proposal_slot_portion) = max_block_proposal_slot_portion {
 				std::cmp::min(
 					lenient_proposing_duration,
 					slot_info.duration.mul_f32(max_block_proposal_slot_portion.get()),
@@ -709,10 +601,10 @@ pub fn proposing_remaining_duration<Block: BlockT>(
 
 		debug!(
 			target: log_target,
-			"No block for {} slots. Applying {} lenience, total proposing duration: {}",
+			"No block for {} slots. Applying {} lenience, total proposing duration: {}ms",
 			slot_info.slot.saturating_sub(parent_slot + 1),
 			slot_lenience_type.as_str(),
-			lenient_proposing_duration.as_secs(),
+			lenient_proposing_duration.as_millis(),
 		);
 
 		lenient_proposing_duration
@@ -844,7 +736,9 @@ where
 			return false
 		}
 
-		let unfinalized_block_length = chain_head_number - finalized_number;
+		// There can be race between getting the finalized number and getting the best number.
+		// So, better be safe than sorry.
+		let unfinalized_block_length = chain_head_number.saturating_sub(finalized_number);
 		let interval =
 			unfinalized_block_length.saturating_sub(self.unfinalized_slack) / self.authoring_bias;
 		let interval = interval.min(self.max_interval);
@@ -882,7 +776,7 @@ impl<N> BackoffAuthoringBlocksStrategy<N> for () {
 #[cfg(test)]
 mod test {
 	use super::*;
-	use sp_api::NumberFor;
+	use sp_runtime::traits::NumberFor;
 	use std::time::{Duration, Instant};
 	use substrate_test_runtime_client::runtime::{Block, Header};
 
@@ -892,7 +786,6 @@ mod test {
 		super::slots::SlotInfo {
 			slot: slot.into(),
 			duration: SLOT_DURATION,
-			timestamp: Default::default(),
 			inherent_data: Default::default(),
 			ends_at: Instant::now() + SLOT_DURATION,
 			chain_head: Header::new(

@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2020-2021 Parity Technologies (UK) Ltd.
+// Copyright (C) 2020-2022 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -16,13 +16,14 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use std::{convert::TryFrom, time::SystemTime};
+use std::time::SystemTime;
 
 use crate::config::Configuration;
 use futures_timer::Delay;
 use prometheus_endpoint::{register, Gauge, GaugeVec, Opts, PrometheusError, Registry, U64};
 use sc_client_api::{ClientInfo, UsageProvider};
-use sc_network::{config::Role, NetworkService, NetworkStatus};
+use sc_network::config::Role;
+use sc_network_common::service::{NetworkStatus, NetworkStatusProvider};
 use sc_telemetry::{telemetry, TelemetryHandle, SUBSTRATE_INFO};
 use sc_transaction_pool_api::{MaintainedTransactionPool, PoolStatus};
 use sc_utils::metrics::register_globals;
@@ -55,18 +56,21 @@ impl PrometheusMetrics {
 		register(
 			Gauge::<U64>::with_opts(
 				Opts::new(
-					"build_info",
+					"substrate_build_info",
 					"A metric with a constant '1' value labeled by name, version",
 				)
 				.const_label("name", name)
 				.const_label("version", version),
 			)?,
-			&registry,
+			registry,
 		)?
 		.set(1);
 
-		register(Gauge::<U64>::new("node_roles", "The roles the node is running as")?, &registry)?
-			.set(roles);
+		register(
+			Gauge::<U64>::new("substrate_node_roles", "The roles the node is running as")?,
+			registry,
+		)?
+		.set(roles);
 
 		register_globals(registry)?;
 
@@ -74,7 +78,7 @@ impl PrometheusMetrics {
 			SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default();
 		register(
 			Gauge::<U64>::new(
-				"process_start_time_seconds",
+				"substrate_process_start_time_seconds",
 				"Number of seconds between the UNIX epoch and the moment the process started",
 			)?,
 			registry,
@@ -85,20 +89,20 @@ impl PrometheusMetrics {
 			// generic internals
 			block_height: register(
 				GaugeVec::new(
-					Opts::new("block_height", "Block height info of the chain"),
+					Opts::new("substrate_block_height", "Block height info of the chain"),
 					&["status"],
 				)?,
 				registry,
 			)?,
 
 			number_leaves: register(
-				Gauge::new("number_leaves", "Number of known chain leaves (aka forks)")?,
+				Gauge::new("substrate_number_leaves", "Number of known chain leaves (aka forks)")?,
 				registry,
 			)?,
 
 			ready_transactions_number: register(
 				Gauge::new(
-					"ready_transactions_number",
+					"substrate_ready_transactions_number",
 					"Number of transactions in the ready queue",
 				)?,
 				registry,
@@ -106,16 +110,16 @@ impl PrometheusMetrics {
 
 			// I/ O
 			database_cache: register(
-				Gauge::new("database_cache_bytes", "RocksDB cache size in bytes")?,
+				Gauge::new("substrate_database_cache_bytes", "RocksDB cache size in bytes")?,
 				registry,
 			)?,
 			state_cache: register(
-				Gauge::new("state_cache_bytes", "State cache size in bytes")?,
+				Gauge::new("substrate_state_cache_bytes", "State cache size in bytes")?,
 				registry,
 			)?,
 			state_db: register(
 				GaugeVec::new(
-					Opts::new("state_db_cache_bytes", "State DB cache in bytes"),
+					Opts::new("substrate_state_db_cache_bytes", "State DB cache in bytes"),
 					&["subtype"],
 				)?,
 				registry,
@@ -157,7 +161,7 @@ impl MetricsService {
 	) -> Result<Self, PrometheusError> {
 		let role_bits = match config.role {
 			Role::Full => 1u64,
-			Role::Light => 2u64,
+			// 2u64 used to represent light client role
 			Role::Authority { .. } => 4u64,
 		};
 
@@ -179,15 +183,16 @@ impl MetricsService {
 	/// Returns a never-ending `Future` that performs the
 	/// metric and telemetry updates with information from
 	/// the given sources.
-	pub async fn run<TBl, TExPool, TCl>(
+	pub async fn run<TBl, TExPool, TCl, TNet>(
 		mut self,
 		client: Arc<TCl>,
 		transactions: Arc<TExPool>,
-		network: Arc<NetworkService<TBl, <TBl as Block>::Hash>>,
+		network: TNet,
 	) where
 		TBl: Block,
 		TCl: ProvideRuntimeApi<TBl> + UsageProvider<TBl>,
 		TExPool: MaintainedTransactionPool<Block = TBl, Hash = <TBl as Block>::Hash>,
+		TNet: NetworkStatusProvider<TBl>,
 	{
 		let mut timer = Delay::new(Duration::from_secs(0));
 		let timer_interval = Duration::from_secs(5);
@@ -295,9 +300,10 @@ impl MetricsService {
 						UniqueSaturatedInto::<u64>::unique_saturated_into(num)
 					});
 
-				if let Some(best_seen_block) = best_seen_block {
-					metrics.block_height.with_label_values(&["sync_target"]).set(best_seen_block);
-				}
+				metrics
+					.block_height
+					.with_label_values(&["sync_target"])
+					.set(best_seen_block.unwrap_or(best_number));
 			}
 		}
 	}

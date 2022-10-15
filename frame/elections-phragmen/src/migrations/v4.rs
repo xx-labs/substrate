@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2021 Parity Technologies (UK) Ltd.
+// Copyright (C) 2021-2022 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -38,7 +38,7 @@ pub fn migrate<T: crate::Config, N: AsRef<str>>(new_pallet_name: N) -> Weight {
 			target: "runtime::elections-phragmen",
 			"New pallet name is equal to the old prefix. No migration needs to be done.",
 		);
-		return 0
+		return Weight::zero()
 	}
 	let storage_version = StorageVersion::get::<crate::Pallet<T>>();
 	log::info!(
@@ -63,7 +63,7 @@ pub fn migrate<T: crate::Config, N: AsRef<str>>(new_pallet_name: N) -> Weight {
 			"Attempted to apply migration to v4 but failed because storage version is {:?}",
 			storage_version,
 		);
-		0
+		Weight::zero()
 	}
 }
 

@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2020-2021 Parity Technologies (UK) Ltd.
+// Copyright (C) 2020-2022 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -16,7 +16,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use std::fmt::Debug;
+use std::{collections::HashSet, fmt::Debug};
 
 use crate::ServicetoWorkerMsg;
 
@@ -25,7 +25,7 @@ use futures::{
 	SinkExt,
 };
 
-use sc_network::{Multiaddr, PeerId};
+use libp2p::{Multiaddr, PeerId};
 use sp_authority_discovery::AuthorityId;
 
 /// Service to interact with the [`crate::Worker`].
@@ -62,7 +62,7 @@ impl Service {
 	pub async fn get_addresses_by_authority_id(
 		&mut self,
 		authority: AuthorityId,
-	) -> Option<Vec<Multiaddr>> {
+	) -> Option<HashSet<Multiaddr>> {
 		let (tx, rx) = oneshot::channel();
 
 		self.to_worker
@@ -78,11 +78,14 @@ impl Service {
 	///
 	/// Returns `None` if no entry was present or connection to the
 	/// [`crate::Worker`] failed.
-	pub async fn get_authority_id_by_peer_id(&mut self, peer_id: PeerId) -> Option<AuthorityId> {
+	pub async fn get_authority_ids_by_peer_id(
+		&mut self,
+		peer_id: PeerId,
+	) -> Option<HashSet<AuthorityId>> {
 		let (tx, rx) = oneshot::channel();
 
 		self.to_worker
-			.send(ServicetoWorkerMsg::GetAuthorityIdByPeerId(peer_id, tx))
+			.send(ServicetoWorkerMsg::GetAuthorityIdsByPeerId(peer_id, tx))
 			.await
 			.ok()?;
 

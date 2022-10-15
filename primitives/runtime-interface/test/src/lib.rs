@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2019-2021 Parity Technologies (UK) Ltd.
+// Copyright (C) 2019-2022 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -23,8 +23,8 @@ use sp_runtime_interface::*;
 use sp_runtime_interface_test_wasm::{test_api::HostFunctions, wasm_binary_unwrap};
 use sp_runtime_interface_test_wasm_deprecated::wasm_binary_unwrap as wasm_binary_deprecated_unwrap;
 
-use sc_executor_common::runtime_blob::RuntimeBlob;
-use sp_wasm_interface::HostFunctions as HostFunctionsT;
+use sc_executor_common::{runtime_blob::RuntimeBlob, wasm_runtime::AllocationStats};
+use sp_wasm_interface::{ExtendedHostFunctions, HostFunctions as HostFunctionsT};
 
 use std::{
 	collections::HashSet,
@@ -36,48 +36,44 @@ type TestExternalities = sp_state_machine::TestExternalities<sp_runtime::traits:
 fn call_wasm_method_with_result<HF: HostFunctionsT>(
 	binary: &[u8],
 	method: &str,
-) -> Result<TestExternalities, String> {
+) -> (Result<TestExternalities, String>, Option<AllocationStats>) {
 	let mut ext = TestExternalities::default();
 	let mut ext_ext = ext.ext();
-	let mut host_functions = HF::host_functions();
-	host_functions.extend(sp_io::SubstrateHostFunctions::host_functions());
 
-	let executor = sc_executor::WasmExecutor::new(
-		sc_executor::WasmExecutionMethod::Interpreted,
-		Some(8),
-		host_functions,
-		8,
-		None,
+	let executor = sc_executor::WasmExecutor::<
+		ExtendedHostFunctions<sp_io::SubstrateHostFunctions, HF>,
+	>::new(sc_executor::WasmExecutionMethod::Interpreted, Some(8), 8, None, 2);
+
+	let (result, allocation_stats) = executor.uncached_call_with_allocation_stats(
+		RuntimeBlob::uncompress_if_needed(binary).expect("Failed to parse binary"),
+		&mut ext_ext,
+		false,
+		method,
+		&[],
 	);
-	executor
-		.uncached_call(
-			RuntimeBlob::uncompress_if_needed(binary).expect("Failed to parse binary"),
-			&mut ext_ext,
-			false,
-			method,
-			&[],
-		)
-		.map_err(|e| format!("Failed to execute `{}`: {}", method, e))?;
-	Ok(ext)
+	let result = result
+		.map_err(|e| format!("Failed to execute `{}`: {}", method, e))
+		.map(|_| ext);
+	(result, allocation_stats)
 }
 
 fn call_wasm_method<HF: HostFunctionsT>(binary: &[u8], method: &str) -> TestExternalities {
-	call_wasm_method_with_result::<HF>(binary, method).unwrap()
+	call_wasm_method_with_result::<HF>(binary, method).0.unwrap()
 }
 
 #[test]
 fn test_return_data() {
-	call_wasm_method::<HostFunctions>(&wasm_binary_unwrap()[..], "test_return_data");
+	call_wasm_method::<HostFunctions>(wasm_binary_unwrap(), "test_return_data");
 }
 
 #[test]
 fn test_return_option_data() {
-	call_wasm_method::<HostFunctions>(&wasm_binary_unwrap()[..], "test_return_option_data");
+	call_wasm_method::<HostFunctions>(wasm_binary_unwrap(), "test_return_option_data");
 }
 
 #[test]
 fn test_set_storage() {
-	let mut ext = call_wasm_method::<HostFunctions>(&wasm_binary_unwrap()[..], "test_set_storage");
+	let mut ext = call_wasm_method::<HostFunctions>(wasm_binary_unwrap(), "test_set_storage");
 
 	let expected = "world";
 	assert_eq!(expected.as_bytes(), &ext.ext().storage("hello".as_bytes()).unwrap()[..]);
@@ -86,29 +82,30 @@ fn test_set_storage() {
 #[test]
 fn test_return_value_into_mutable_reference() {
 	call_wasm_method::<HostFunctions>(
-		&wasm_binary_unwrap()[..],
+		wasm_binary_unwrap(),
 		"test_return_value_into_mutable_reference",
 	);
 }
 
 #[test]
 fn test_get_and_return_array() {
-	call_wasm_method::<HostFunctions>(&wasm_binary_unwrap()[..], "test_get_and_return_array");
+	call_wasm_method::<HostFunctions>(wasm_binary_unwrap(), "test_get_and_return_array");
 }
 
 #[test]
 fn test_array_as_mutable_reference() {
-	call_wasm_method::<HostFunctions>(&wasm_binary_unwrap()[..], "test_array_as_mutable_reference");
+	call_wasm_method::<HostFunctions>(wasm_binary_unwrap(), "test_array_as_mutable_reference");
 }
 
 #[test]
 fn test_return_input_public_key() {
-	call_wasm_method::<HostFunctions>(&wasm_binary_unwrap()[..], "test_return_input_public_key");
+	call_wasm_method::<HostFunctions>(wasm_binary_unwrap(), "test_return_input_public_key");
 }
 
 #[test]
 fn host_function_not_found() {
-	let err = call_wasm_method_with_result::<()>(&wasm_binary_unwrap()[..], "test_return_data")
+	let err = call_wasm_method_with_result::<()>(wasm_binary_unwrap(), "test_return_data")
+		.0
 		.unwrap_err();
 
 	assert!(err.contains("Instantiation: Export "));
@@ -119,7 +116,7 @@ fn host_function_not_found() {
 #[should_panic(expected = "Invalid utf8 data provided")]
 fn test_invalid_utf8_data_should_return_an_error() {
 	call_wasm_method::<HostFunctions>(
-		&wasm_binary_unwrap()[..],
+		wasm_binary_unwrap(),
 		"test_invalid_utf8_data_should_return_an_error",
 	);
 }
@@ -127,7 +124,7 @@ fn test_invalid_utf8_data_should_return_an_error() {
 #[test]
 fn test_overwrite_native_function_implementation() {
 	call_wasm_method::<HostFunctions>(
-		&wasm_binary_unwrap()[..],
+		wasm_binary_unwrap(),
 		"test_overwrite_native_function_implementation",
 	);
 }
@@ -135,7 +132,7 @@ fn test_overwrite_native_function_implementation() {
 #[test]
 fn test_u128_i128_as_parameter_and_return_value() {
 	call_wasm_method::<HostFunctions>(
-		&wasm_binary_unwrap()[..],
+		wasm_binary_unwrap(),
 		"test_u128_i128_as_parameter_and_return_value",
 	);
 }
@@ -143,7 +140,7 @@ fn test_u128_i128_as_parameter_and_return_value() {
 #[test]
 fn test_vec_return_value_memory_is_freed() {
 	call_wasm_method::<HostFunctions>(
-		&wasm_binary_unwrap()[..],
+		wasm_binary_unwrap(),
 		"test_vec_return_value_memory_is_freed",
 	);
 }
@@ -151,7 +148,7 @@ fn test_vec_return_value_memory_is_freed() {
 #[test]
 fn test_encoded_return_value_memory_is_freed() {
 	call_wasm_method::<HostFunctions>(
-		&wasm_binary_unwrap()[..],
+		wasm_binary_unwrap(),
 		"test_encoded_return_value_memory_is_freed",
 	);
 }
@@ -159,7 +156,7 @@ fn test_encoded_return_value_memory_is_freed() {
 #[test]
 fn test_array_return_value_memory_is_freed() {
 	call_wasm_method::<HostFunctions>(
-		&wasm_binary_unwrap()[..],
+		wasm_binary_unwrap(),
 		"test_array_return_value_memory_is_freed",
 	);
 }
@@ -167,14 +164,16 @@ fn test_array_return_value_memory_is_freed() {
 #[test]
 fn test_versionining_with_new_host_works() {
 	// We call to the new wasm binary with new host function.
-	call_wasm_method::<HostFunctions>(&wasm_binary_unwrap()[..], "test_versionning_works");
+	call_wasm_method::<HostFunctions>(wasm_binary_unwrap(), "test_versionning_works");
 
 	// we call to the old wasm binary with a new host functions
 	// old versions of host functions should be called and test should be ok!
-	call_wasm_method::<HostFunctions>(
-		&wasm_binary_deprecated_unwrap()[..],
-		"test_versionning_works",
-	);
+	call_wasm_method::<HostFunctions>(wasm_binary_deprecated_unwrap(), "test_versionning_works");
+}
+
+#[test]
+fn test_versionining_register_only() {
+	call_wasm_method::<HostFunctions>(wasm_binary_unwrap(), "test_versionning_register_only_works");
 }
 
 #[test]
@@ -229,7 +228,7 @@ fn test_tracing() {
 	let _guard = tracing::subscriber::set_default(subscriber.clone());
 
 	// Call some method to generate a trace
-	call_wasm_method::<HostFunctions>(&wasm_binary_unwrap()[..], "test_return_data");
+	call_wasm_method::<HostFunctions>(wasm_binary_unwrap(), "test_return_data");
 
 	let inner = subscriber.0.lock().unwrap();
 	assert!(inner.spans.contains("return_input_version_1"));
@@ -237,5 +236,45 @@ fn test_tracing() {
 
 #[test]
 fn test_return_input_as_tuple() {
-	call_wasm_method::<HostFunctions>(&wasm_binary_unwrap()[..], "test_return_input_as_tuple");
+	call_wasm_method::<HostFunctions>(wasm_binary_unwrap(), "test_return_input_as_tuple");
+}
+
+#[test]
+fn test_returning_option_bytes_from_a_host_function_is_efficient() {
+	let (result, stats_vec) = call_wasm_method_with_result::<HostFunctions>(
+		wasm_binary_unwrap(),
+		"test_return_option_vec",
+	);
+	result.unwrap();
+	let (result, stats_bytes) = call_wasm_method_with_result::<HostFunctions>(
+		wasm_binary_unwrap(),
+		"test_return_option_bytes",
+	);
+	result.unwrap();
+
+	let stats_vec = stats_vec.unwrap();
+	let stats_bytes = stats_bytes.unwrap();
+
+	// The way we currently implement marshaling of `Option<Vec<u8>>` through
+	// the WASM FFI boundary from the host to the runtime requires that it is
+	// marshaled through SCALE. This is quite inefficient as it requires two
+	// memory allocations inside of the runtime:
+	//
+	//   1) the first allocation to copy the SCALE-encoded blob into the runtime;
+	//   2) and another allocation for the resulting `Vec<u8>` when decoding that blob.
+	//
+	// Both of these allocations are are as big as the `Vec<u8>` which is being
+	// passed to the runtime. This is especially bad when fetching big values
+	// from storage, as it can lead to an out-of-memory situation.
+	//
+	// Our `Option<Bytes>` marshaling is better; it still must go through SCALE,
+	// and it still requires two allocations, however since `Bytes` is zero-copy
+	// only the first allocation is `Vec<u8>`-sized, and the second allocation
+	// which creates the deserialized `Bytes` is tiny, and is only necessary because
+	// the underlying `Bytes` buffer from which we're deserializing gets automatically
+	// turned into an `Arc`.
+	//
+	// So this assertion tests that deserializing `Option<Bytes>` allocates less than
+	// deserializing `Option<Vec<u8>>`.
+	assert_eq!(stats_bytes.bytes_allocated_sum + 16 * 1024 + 8, stats_vec.bytes_allocated_sum);
 }

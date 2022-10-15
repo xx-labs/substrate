@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2017-2021 Parity Technologies (UK) Ltd.
+// Copyright (C) 2017-2022 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -35,13 +35,11 @@ use schnorrkel::{
 #[cfg(feature = "full_crypto")]
 use sp_std::vec::Vec;
 #[cfg(feature = "std")]
-use std::convert::TryFrom;
-#[cfg(feature = "std")]
 use substrate_bip39::mini_secret_from_entropy;
 
 use crate::{
 	crypto::{
-		CryptoType, CryptoTypeId, CryptoTypePublicPair, Derive, Public as TraitPublic,
+		ByteArray, CryptoType, CryptoTypeId, CryptoTypePublicPair, Derive, Public as TraitPublic,
 		UncheckedFrom,
 	},
 	hash::{H256, H512},
@@ -74,7 +72,6 @@ pub const CRYPTO_ID: CryptoTypeId = CryptoTypeId(*b"sr25");
 	Copy,
 	Encode,
 	Decode,
-	Default,
 	PassByInner,
 	MaxEncodedLen,
 	TypeInfo,
@@ -143,17 +140,16 @@ impl std::str::FromStr for Public {
 	}
 }
 
-impl sp_std::convert::TryFrom<&[u8]> for Public {
+impl TryFrom<&[u8]> for Public {
 	type Error = ();
 
 	fn try_from(data: &[u8]) -> Result<Self, Self::Error> {
-		if data.len() == 32 {
-			let mut inner = [0u8; 32];
-			inner.copy_from_slice(data);
-			Ok(Public(inner))
-		} else {
-			Err(())
+		if data.len() != Self::LEN {
+			return Err(())
 		}
+		let mut r = [0u8; 32];
+		r.copy_from_slice(data);
+		Ok(Self::unchecked_from(r))
 	}
 }
 
@@ -213,10 +209,11 @@ impl<'de> Deserialize<'de> for Public {
 /// An Schnorrkel/Ristretto x25519 ("sr25519") signature.
 ///
 /// Instead of importing it for the local module, alias it to be available as a public type
-#[derive(Encode, Decode, PassByInner, TypeInfo)]
+#[cfg_attr(feature = "full_crypto", derive(Hash))]
+#[derive(Encode, Decode, MaxEncodedLen, PassByInner, TypeInfo, PartialEq, Eq)]
 pub struct Signature(pub [u8; 64]);
 
-impl sp_std::convert::TryFrom<&[u8]> for Signature {
+impl TryFrom<&[u8]> for Signature {
 	type Error = ();
 
 	fn try_from(data: &[u8]) -> Result<Self, Self::Error> {
@@ -236,7 +233,7 @@ impl Serialize for Signature {
 	where
 		S: Serializer,
 	{
-		serializer.serialize_str(&hex::encode(self))
+		serializer.serialize_str(&array_bytes::bytes2hex("", self.as_ref()))
 	}
 }
 
@@ -246,7 +243,7 @@ impl<'de> Deserialize<'de> for Signature {
 	where
 		D: Deserializer<'de>,
 	{
-		let signature_hex = hex::decode(&String::deserialize(deserializer)?)
+		let signature_hex = array_bytes::hex2bytes(&String::deserialize(deserializer)?)
 			.map_err(|e| de::Error::custom(format!("{:?}", e)))?;
 		Signature::try_from(signature_hex.as_ref())
 			.map_err(|e| de::Error::custom(format!("{:?}", e)))
@@ -260,20 +257,6 @@ impl Clone for Signature {
 		Signature(r)
 	}
 }
-
-impl Default for Signature {
-	fn default() -> Self {
-		Signature([0u8; 64])
-	}
-}
-
-impl PartialEq for Signature {
-	fn eq(&self, b: &Self) -> bool {
-		self.0[..] == b.0[..]
-	}
-}
-
-impl Eq for Signature {}
 
 impl From<Signature> for [u8; 64] {
 	fn from(v: Signature) -> [u8; 64] {
@@ -324,13 +307,6 @@ impl sp_std::fmt::Debug for Signature {
 	}
 }
 
-#[cfg(feature = "full_crypto")]
-impl sp_std::hash::Hash for Signature {
-	fn hash<H: sp_std::hash::Hasher>(&self, state: &mut H) {
-		sp_std::hash::Hash::hash(&self.0[..], state);
-	}
-}
-
 /// A localized signature also contains sender information.
 /// NOTE: Encode and Decode traits are supported in ed25519 but not possible for now here.
 #[cfg(feature = "std")]
@@ -340,6 +316,12 @@ pub struct LocalizedSignature {
 	pub signer: Public,
 	/// The signature itself.
 	pub signature: Signature,
+}
+
+impl UncheckedFrom<[u8; 64]> for Signature {
+	fn unchecked_from(data: [u8; 64]) -> Signature {
+		Signature(data)
+	}
 }
 
 impl Signature {
@@ -357,10 +339,13 @@ impl Signature {
 	///
 	/// NOTE: No checking goes on to ensure this is a real signature. Only use it if
 	/// you are certain that the array actually is a signature. GIGO!
-	pub fn from_slice(data: &[u8]) -> Self {
+	pub fn from_slice(data: &[u8]) -> Option<Self> {
+		if data.len() != 64 {
+			return None
+		}
 		let mut r = [0u8; 64];
 		r.copy_from_slice(data);
-		Signature(r)
+		Some(Signature(r))
 	}
 
 	/// A new instance from an H512.
@@ -412,17 +397,11 @@ impl Public {
 	}
 }
 
-impl TraitPublic for Public {
-	/// A new instance from the given slice that should be 32 bytes long.
-	///
-	/// NOTE: No checking goes on to ensure this is a real public key. Only use it if
-	/// you are certain that the array actually is a pubkey. GIGO!
-	fn from_slice(data: &[u8]) -> Self {
-		let mut r = [0u8; 32];
-		r.copy_from_slice(data);
-		Public(r)
-	}
+impl ByteArray for Public {
+	const LEN: usize = 32;
+}
 
+impl TraitPublic for Public {
 	fn to_public_crypto_pair(&self) -> CryptoTypePublicPair {
 		CryptoTypePublicPair(CRYPTO_ID, self.to_raw_vec())
 	}
@@ -685,7 +664,6 @@ pub fn verify_batch(
 mod compatibility_test {
 	use super::*;
 	use crate::crypto::DEV_PHRASE;
-	use hex_literal::hex;
 
 	// NOTE: tests to ensure addresses that are created with the `0.1.x` version (pre-audit) are
 	// still functional.
@@ -694,7 +672,9 @@ mod compatibility_test {
 	fn derive_soft_known_pair_should_work() {
 		let pair = Pair::from_string(&format!("{}/Alice", DEV_PHRASE), None).unwrap();
 		// known address of DEV_PHRASE with 1.1
-		let known = hex!("d6c71059dbbe9ad2b0ed3f289738b800836eb425544ce694825285b958ca755e");
+		let known = array_bytes::hex2bytes_unchecked(
+			"d6c71059dbbe9ad2b0ed3f289738b800836eb425544ce694825285b958ca755e",
+		);
 		assert_eq!(pair.public().to_raw_vec(), known);
 	}
 
@@ -702,17 +682,19 @@ mod compatibility_test {
 	fn derive_hard_known_pair_should_work() {
 		let pair = Pair::from_string(&format!("{}//Alice", DEV_PHRASE), None).unwrap();
 		// known address of DEV_PHRASE with 1.1
-		let known = hex!("d43593c715fdd31c61141abd04a99fd6822c8558854ccde39a5684e7a56da27d");
+		let known = array_bytes::hex2bytes_unchecked(
+			"d43593c715fdd31c61141abd04a99fd6822c8558854ccde39a5684e7a56da27d",
+		);
 		assert_eq!(pair.public().to_raw_vec(), known);
 	}
 
 	#[test]
 	fn verify_known_old_message_should_work() {
-		let public = Public::from_raw(hex!(
-			"b4bfa1f7a5166695eb75299fd1c4c03ea212871c342f2c5dfea0902b2c246918"
+		let public = Public::from_raw(array_bytes::hex2array_unchecked(
+			"b4bfa1f7a5166695eb75299fd1c4c03ea212871c342f2c5dfea0902b2c246918",
 		));
 		// signature generated by the 1.1 version with the same ^^ public key.
-		let signature = Signature::from_raw(hex!(
+		let signature = Signature::from_raw(array_bytes::hex2array_unchecked(
 			"5a9755f069939f45d96aaf125cf5ce7ba1db998686f87f2fb3cbdea922078741a73891ba265f70c31436e18a9acd14d189d73c12317ab6c313285cd938453202"
 		));
 		let message = b"Verifying that I am the owner of 5G9hQLdsKQswNPgB499DeA5PkFBbgkLPJWkkS6FAM6xGQ8xD. Hash: 221455a3\n";
@@ -725,7 +707,6 @@ mod compatibility_test {
 mod test {
 	use super::*;
 	use crate::crypto::{Ss58Codec, DEV_ADDRESS, DEV_PHRASE};
-	use hex_literal::hex;
 	use serde_json;
 
 	#[test]
@@ -766,8 +747,8 @@ mod test {
 
 	#[test]
 	fn derive_soft_should_work() {
-		let pair = Pair::from_seed(&hex!(
-			"9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60"
+		let pair = Pair::from_seed(&array_bytes::hex2array_unchecked(
+			"9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
 		));
 		let derive_1 = pair.derive(Some(DeriveJunction::soft(1)).into_iter(), None).unwrap().0;
 		let derive_1b = pair.derive(Some(DeriveJunction::soft(1)).into_iter(), None).unwrap().0;
@@ -778,8 +759,8 @@ mod test {
 
 	#[test]
 	fn derive_hard_should_work() {
-		let pair = Pair::from_seed(&hex!(
-			"9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60"
+		let pair = Pair::from_seed(&array_bytes::hex2array_unchecked(
+			"9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
 		));
 		let derive_1 = pair.derive(Some(DeriveJunction::hard(1)).into_iter(), None).unwrap().0;
 		let derive_1b = pair.derive(Some(DeriveJunction::hard(1)).into_iter(), None).unwrap().0;
@@ -790,8 +771,8 @@ mod test {
 
 	#[test]
 	fn derive_soft_public_should_work() {
-		let pair = Pair::from_seed(&hex!(
-			"9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60"
+		let pair = Pair::from_seed(&array_bytes::hex2array_unchecked(
+			"9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
 		));
 		let path = Some(DeriveJunction::soft(1));
 		let pair_1 = pair.derive(path.into_iter(), None).unwrap().0;
@@ -801,8 +782,8 @@ mod test {
 
 	#[test]
 	fn derive_hard_public_should_fail() {
-		let pair = Pair::from_seed(&hex!(
-			"9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60"
+		let pair = Pair::from_seed(&array_bytes::hex2array_unchecked(
+			"9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
 		));
 		let path = Some(DeriveJunction::hard(1));
 		assert!(pair.public().derive(path.into_iter()).is_none());
@@ -810,13 +791,13 @@ mod test {
 
 	#[test]
 	fn sr_test_vector_should_work() {
-		let pair = Pair::from_seed(&hex!(
-			"9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60"
+		let pair = Pair::from_seed(&array_bytes::hex2array_unchecked(
+			"9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
 		));
 		let public = pair.public();
 		assert_eq!(
 			public,
-			Public::from_raw(hex!(
+			Public::from_raw(array_bytes::hex2array_unchecked(
 				"44a996beb1eef7bdcab976ab6d2ca26104834164ecf28fb375600576fcc6eb0f"
 			))
 		);
@@ -861,11 +842,11 @@ mod test {
 		let public = pair.public();
 		assert_eq!(
 			public,
-			Public::from_raw(hex!(
+			Public::from_raw(array_bytes::hex2array_unchecked(
 				"741c08a06f41c596608f6774259bd9043304adfa5d3eea62760bd9be97634d63"
 			))
 		);
-		let message = hex!("2f8c6129d816cf51c374bc7f08c3e63ed156cf78aefb4a6550d97b87997977ee00000000000000000200d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a4500000000000000");
+		let message = array_bytes::hex2bytes_unchecked("2f8c6129d816cf51c374bc7f08c3e63ed156cf78aefb4a6550d97b87997977ee00000000000000000200d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a4500000000000000");
 		let signature = pair.sign(&message[..]);
 		assert!(Pair::verify(&signature, &message[..], &public));
 	}
@@ -886,11 +867,11 @@ mod test {
 		// schnorrkel-js.
 		//
 		// This is to make sure that the wasm library is compatible.
-		let pk = Pair::from_seed(&hex!(
-			"0000000000000000000000000000000000000000000000000000000000000000"
+		let pk = Pair::from_seed(&array_bytes::hex2array_unchecked(
+			"0000000000000000000000000000000000000000000000000000000000000000",
 		));
 		let public = pk.public();
-		let js_signature = Signature::from_raw(hex!(
+		let js_signature = Signature::from_raw(array_bytes::hex2array_unchecked(
 			"28a854d54903e056f89581c691c1f7d2ff39f8f896c9e9c22475e60902cc2b3547199e0e91fa32902028f2ca2355e8cdd16cfe19ba5e8b658c94aa80f3b81a00"
 		));
 		assert!(Pair::verify_deprecated(&js_signature, b"SUBSTRATE", &public));

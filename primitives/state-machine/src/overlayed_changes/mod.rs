@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2017-2021 Parity Technologies (UK) Ltd.
+// Copyright (C) 2017-2022 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -27,7 +27,7 @@ use hash_db::Hasher;
 pub use offchain::OffchainOverlayedChanges;
 use sp_core::{
 	offchain::OffchainOverlayedChange,
-	storage::{well_known_keys::EXTRINSIC_INDEX, ChildInfo},
+	storage::{well_known_keys::EXTRINSIC_INDEX, ChildInfo, StateVersion},
 };
 #[cfg(feature = "std")]
 use sp_externalities::{Extension, Extensions};
@@ -104,7 +104,7 @@ pub struct OverlayedChanges {
 	stats: StateMachineStats,
 }
 
-/// Transcation index operation.
+/// Transaction index operation.
 #[derive(Debug, Clone)]
 pub enum IndexOperation {
 	/// Insert transaction into index.
@@ -299,7 +299,7 @@ impl OverlayedChanges {
 	/// Clear child storage of given storage key.
 	///
 	/// Can be rolled back or committed when called inside a transaction.
-	pub(crate) fn clear_child_storage(&mut self, child_info: &ChildInfo) {
+	pub(crate) fn clear_child_storage(&mut self, child_info: &ChildInfo) -> u32 {
 		let extrinsic_index = self.extrinsic_index();
 		let storage_key = child_info.storage_key().to_vec();
 		let top = &self.top;
@@ -309,20 +309,20 @@ impl OverlayedChanges {
 			.or_insert_with(|| (top.spawn_child(), child_info.clone()));
 		let updatable = info.try_update(child_info);
 		debug_assert!(updatable);
-		changeset.clear_where(|_, _| true, extrinsic_index);
+		changeset.clear_where(|_, _| true, extrinsic_index)
 	}
 
 	/// Removes all key-value pairs which keys share the given prefix.
 	///
 	/// Can be rolled back or committed when called inside a transaction.
-	pub(crate) fn clear_prefix(&mut self, prefix: &[u8]) {
-		self.top.clear_where(|key, _| key.starts_with(prefix), self.extrinsic_index());
+	pub(crate) fn clear_prefix(&mut self, prefix: &[u8]) -> u32 {
+		self.top.clear_where(|key, _| key.starts_with(prefix), self.extrinsic_index())
 	}
 
 	/// Removes all key-value pairs which keys share the given prefix.
 	///
 	/// Can be rolled back or committed when called inside a transaction
-	pub(crate) fn clear_child_prefix(&mut self, child_info: &ChildInfo, prefix: &[u8]) {
+	pub(crate) fn clear_child_prefix(&mut self, child_info: &ChildInfo, prefix: &[u8]) -> u32 {
 		let extrinsic_index = self.extrinsic_index();
 		let storage_key = child_info.storage_key().to_vec();
 		let top = &self.top;
@@ -332,7 +332,7 @@ impl OverlayedChanges {
 			.or_insert_with(|| (top.spawn_child(), child_info.clone()));
 		let updatable = info.try_update(child_info);
 		debug_assert!(updatable);
-		changeset.clear_where(|key, _| key.starts_with(prefix), extrinsic_index);
+		changeset.clear_where(|key, _| key.starts_with(prefix), extrinsic_index)
 	}
 
 	/// Returns the current nesting depth of the transaction stack.
@@ -500,28 +500,28 @@ impl OverlayedChanges {
 	pub fn into_storage_changes<B: Backend<H>, H: Hasher>(
 		mut self,
 		backend: &B,
-		parent_hash: H::Out,
 		mut cache: StorageTransactionCache<B::Transaction, H>,
+		state_version: StateVersion,
 	) -> Result<StorageChanges<B::Transaction, H>, DefaultError>
 	where
 		H::Out: Ord + Encode + 'static,
 	{
-		self.drain_storage_changes(backend, parent_hash, &mut cache)
+		self.drain_storage_changes(backend, &mut cache, state_version)
 	}
 
 	/// Drain all changes into a [`StorageChanges`] instance. Leave empty overlay in place.
 	pub fn drain_storage_changes<B: Backend<H>, H: Hasher>(
 		&mut self,
 		backend: &B,
-		_parent_hash: H::Out,
-		mut cache: &mut StorageTransactionCache<B::Transaction, H>,
+		cache: &mut StorageTransactionCache<B::Transaction, H>,
+		state_version: StateVersion,
 	) -> Result<StorageChanges<B::Transaction, H>, DefaultError>
 	where
 		H::Out: Ord + Encode + 'static,
 	{
 		// If the transaction does not exist, we generate it.
 		if cache.transaction.is_none() {
-			self.storage_root(backend, &mut cache);
+			self.storage_root(backend, cache, state_version);
 		}
 
 		let (transaction, transaction_storage_root) = cache
@@ -580,6 +580,7 @@ impl OverlayedChanges {
 		&self,
 		backend: &B,
 		cache: &mut StorageTransactionCache<B::Transaction, H>,
+		state_version: StateVersion,
 	) -> H::Out
 	where
 		H::Out: Ord + Encode,
@@ -589,7 +590,7 @@ impl OverlayedChanges {
 			(info, changes.map(|(k, v)| (&k[..], v.value().map(|v| &v[..]))))
 		});
 
-		let (root, transaction) = backend.full_storage_root(delta, child_delta);
+		let (root, transaction) = backend.full_storage_root(delta, child_delta, state_version);
 
 		cache.transaction = Some(transaction);
 		cache.transaction_storage_root = Some(root);
@@ -634,6 +635,21 @@ impl OverlayedChanges {
 	/// Add transaction index operation.
 	pub fn add_transaction_index(&mut self, op: IndexOperation) {
 		self.transaction_index_ops.push(op)
+	}
+}
+
+#[cfg(feature = "std")]
+impl From<sp_core::storage::Storage> for OverlayedChanges {
+	fn from(storage: sp_core::storage::Storage) -> Self {
+		Self {
+			top: storage.top.into(),
+			children: storage
+				.children_default
+				.into_iter()
+				.map(|(k, v)| (k, (v.data.into(), v.child_info)))
+				.collect(),
+			..Default::default()
+		}
 	}
 }
 
@@ -727,7 +743,6 @@ impl<'a> OverlayedExtensions<'a> {
 mod tests {
 	use super::*;
 	use crate::{ext::Ext, InMemoryBackend};
-	use hex_literal::hex;
 	use sp_core::{traits::Externalities, Blake2Hasher};
 	use std::collections::BTreeMap;
 
@@ -830,6 +845,7 @@ mod tests {
 
 	#[test]
 	fn overlayed_storage_root_works() {
+		let state_version = StateVersion::default();
 		let initial: BTreeMap<_, _> = vec![
 			(b"doe".to_vec(), b"reindeer".to_vec()),
 			(b"dog".to_vec(), b"puppyXXX".to_vec()),
@@ -838,7 +854,7 @@ mod tests {
 		]
 		.into_iter()
 		.collect();
-		let backend = InMemoryBackend::<Blake2Hasher>::from(initial);
+		let backend = InMemoryBackend::<Blake2Hasher>::from((initial, state_version));
 		let mut overlay = OverlayedChanges::default();
 
 		overlay.start_transaction();
@@ -853,10 +869,11 @@ mod tests {
 
 		let mut cache = StorageTransactionCache::default();
 		let mut ext = Ext::new(&mut overlay, &mut cache, &backend, None);
-		const ROOT: [u8; 32] =
-			hex!("39245109cef3758c2eed2ccba8d9b370a917850af3824bc8348d505df2c298fa");
+		let root = array_bytes::hex2bytes_unchecked(
+			"39245109cef3758c2eed2ccba8d9b370a917850af3824bc8348d505df2c298fa",
+		);
 
-		assert_eq!(&ext.storage_root()[..], &ROOT);
+		assert_eq!(&ext.storage_root(state_version)[..], &root);
 	}
 
 	#[test]

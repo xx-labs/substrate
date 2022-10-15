@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2018-2021 Parity Technologies (UK) Ltd.
+// Copyright (C) 2018-2022 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -22,13 +22,14 @@
 use crate::{self as pallet_grandpa, AuthorityId, AuthorityList, Config, ConsensusLog};
 use ::grandpa as finality_grandpa;
 use codec::Encode;
-use frame_election_provider_support::onchain;
+use frame_election_provider_support::{onchain, SequentialPhragmen};
 use frame_support::{
 	parameter_types,
-	traits::{GenesisBuild, KeyOwnerProofSystem, OnFinalize, OnInitialize},
+	traits::{
+		ConstU128, ConstU32, ConstU64, GenesisBuild, KeyOwnerProofSystem, OnFinalize, OnInitialize,
+	},
 };
 use pallet_session::historical as pallet_session_historical;
-use pallet_staking::EraIndex;
 use sp_core::{crypto::KeyTypeId, H256};
 use sp_finality_grandpa::{RoundNumber, SetId, GRANDPA_ENGINE_ID};
 use sp_keyring::Ed25519Keyring;
@@ -36,10 +37,10 @@ use sp_runtime::{
 	curve::PiecewiseLinear,
 	impl_opaque_keys,
 	testing::{Header, TestXt, UintAuthorityId},
-	traits::{IdentityLookup, OpaqueKeys},
+	traits::{IdentityLookup, OpaqueKeys, Zero},
 	DigestItem, Perbill,
 };
-use sp_staking::SessionIndex;
+use sp_staking::{EraIndex, SessionIndex};
 
 type UncheckedExtrinsic = frame_system::mocking::MockUncheckedExtrinsic<Test>;
 type Block = frame_system::mocking::MockBlock<Test>;
@@ -69,9 +70,8 @@ impl_opaque_keys! {
 }
 
 parameter_types! {
-	pub const BlockHashCount: u64 = 250;
 	pub BlockWeights: frame_system::limits::BlockWeights =
-		frame_system::limits::BlockWeights::simple_max(1024);
+		frame_system::limits::BlockWeights::simple_max(frame_support::weights::Weight::from_ref_time(1024));
 }
 
 impl frame_system::Config for Test {
@@ -79,17 +79,17 @@ impl frame_system::Config for Test {
 	type BlockWeights = ();
 	type BlockLength = ();
 	type DbWeight = ();
-	type Origin = Origin;
+	type RuntimeOrigin = RuntimeOrigin;
 	type Index = u64;
 	type BlockNumber = u64;
-	type Call = Call;
+	type RuntimeCall = RuntimeCall;
 	type Hash = H256;
 	type Hashing = sp_runtime::traits::BlakeTwo256;
 	type AccountId = u64;
 	type Lookup = IdentityLookup<Self::AccountId>;
 	type Header = Header;
-	type Event = Event;
-	type BlockHashCount = BlockHashCount;
+	type RuntimeEvent = RuntimeEvent;
+	type BlockHashCount = ConstU64<250>;
 	type Version = ();
 	type PalletInfo = PalletInfo;
 	type AccountData = pallet_balances::AccountData<u128>;
@@ -98,14 +98,15 @@ impl frame_system::Config for Test {
 	type SystemWeightInfo = ();
 	type SS58Prefix = ();
 	type OnSetCode = ();
+	type MaxConsumers = frame_support::traits::ConstU32<16>;
 }
 
 impl<C> frame_system::offchain::SendTransactionTypes<C> for Test
 where
-	Call: From<C>,
+	RuntimeCall: From<C>,
 {
-	type OverarchingCall = Call;
-	type Extrinsic = TestXt<Call, ()>;
+	type OverarchingCall = RuntimeCall;
+	type Extrinsic = TestXt<RuntimeCall, ()>;
 }
 
 parameter_types! {
@@ -115,11 +116,11 @@ parameter_types! {
 
 /// Custom `SessionHandler` since we use `TestSessionKeys` as `Keys`.
 impl pallet_session::Config for Test {
-	type Event = Event;
+	type RuntimeEvent = RuntimeEvent;
 	type ValidatorId = u64;
 	type ValidatorIdOf = pallet_staking::StashOf<Self>;
-	type ShouldEndSession = pallet_session::PeriodicSessions<Period, Offset>;
-	type NextSessionRotation = pallet_session::PeriodicSessions<Period, Offset>;
+	type ShouldEndSession = pallet_session::PeriodicSessions<ConstU64<1>, ConstU64<0>>;
+	type NextSessionRotation = pallet_session::PeriodicSessions<ConstU64<1>, ConstU64<0>>;
 	type SessionManager = pallet_session::historical::NoteHistoricalRoot<Self, Staking>;
 	type SessionHandler = <TestSessionKeys as OpaqueKeys>::KeyTypeIdProviders;
 	type Keys = TestSessionKeys;
@@ -131,19 +132,11 @@ impl pallet_session::historical::Config for Test {
 	type FullIdentificationOf = pallet_staking::ExposureOf<Self>;
 }
 
-parameter_types! {
-	pub const UncleGenerations: u64 = 0;
-}
-
 impl pallet_authorship::Config for Test {
 	type FindAuthor = ();
-	type UncleGenerations = UncleGenerations;
+	type UncleGenerations = ConstU64<0>;
 	type FilterUncle = ();
 	type EventHandler = ();
-}
-
-parameter_types! {
-	pub const ExistentialDeposit: u128 = 1;
 }
 
 impl pallet_balances::Config for Test {
@@ -152,20 +145,16 @@ impl pallet_balances::Config for Test {
 	type ReserveIdentifier = [u8; 8];
 	type Balance = u128;
 	type DustRemoval = ();
-	type Event = Event;
-	type ExistentialDeposit = ExistentialDeposit;
+	type RuntimeEvent = RuntimeEvent;
+	type ExistentialDeposit = ConstU128<1>;
 	type AccountStore = System;
 	type WeightInfo = ();
-}
-
-parameter_types! {
-	pub const MinimumPeriod: u64 = 3;
 }
 
 impl pallet_timestamp::Config for Test {
 	type Moment = u64;
 	type OnTimestampSet = ();
-	type MinimumPeriod = MinimumPeriod;
+	type MinimumPeriod = ConstU64<3>;
 	type WeightInfo = ();
 }
 
@@ -183,46 +172,74 @@ pallet_staking_reward_curve::build! {
 parameter_types! {
 	pub const SessionsPerEra: SessionIndex = 3;
 	pub const BondingDuration: EraIndex = 3;
-	pub const SlashDeferDuration: EraIndex = 0;
-	pub const AttestationPeriod: u64 = 100;
 	pub const RewardCurve: &'static PiecewiseLinear<'static> = &REWARD_CURVE;
-	pub const MaxNominatorRewardedPerValidator: u32 = 64;
-	pub const ElectionLookahead: u64 = 0;
-	pub const StakingUnsignedPriority: u64 = u64::MAX / 2;
 	pub const OffendingValidatorsThreshold: Perbill = Perbill::from_percent(17);
 }
 
-impl onchain::Config for Test {
-	type Accuracy = Perbill;
+pub struct OnChainSeqPhragmen;
+impl onchain::Config for OnChainSeqPhragmen {
+	type System = Test;
+	type Solver = SequentialPhragmen<u64, Perbill>;
 	type DataProvider = Staking;
+	type WeightInfo = ();
+}
+
+pub struct CustodyHandlerMock;
+impl pallet_staking::CustodyHandler<u64, u128> for CustodyHandlerMock {
+	fn is_custody_account(_account: &u64) -> bool {
+		false
+	}
+	fn total_custody() -> u128 {
+		u128::zero() // This isn't used by the staking pallet
+	}
+}
+
+pub struct CmixHandlerMock;
+impl pallet_staking::CmixHandler for CmixHandlerMock {
+	fn get_block_points() -> u32 { 10 }
+	fn end_era() {} // do nothing
+}
+
+type CmixId = <Test as frame_system::Config>::Hash;
+pub fn cmix_id(byte: u8) -> Option<CmixId> {
+	Some(CmixId::repeat_byte(byte))
 }
 
 impl pallet_staking::Config for Test {
-	const MAX_NOMINATIONS: u32 = 16;
+	type MaxNominations = ConstU32<16>;
 	type RewardRemainder = ();
 	type CurrencyToVote = frame_support::traits::SaturatingCurrencyToVote;
-	type Event = Event;
+	type CmixHandler = CmixHandlerMock;
+	type CustodyHandler = CustodyHandlerMock;
+	type AdminOrigin = frame_system::EnsureRoot<Self::AccountId>;
+	type RuntimeEvent = RuntimeEvent;
 	type Currency = Balances;
+	type CurrencyBalance = <Self as pallet_balances::Config>::Balance;
 	type Slash = ();
 	type Reward = ();
 	type SessionsPerEra = SessionsPerEra;
 	type BondingDuration = BondingDuration;
-	type SlashDeferDuration = SlashDeferDuration;
+	type SlashDeferDuration = ();
 	type SlashCancelOrigin = frame_system::EnsureRoot<Self::AccountId>;
 	type SessionInterface = Self;
 	type UnixTime = pallet_timestamp::Pallet<Test>;
 	type EraPayout = pallet_staking::ConvertCurve<RewardCurve>;
-	type MaxNominatorRewardedPerValidator = MaxNominatorRewardedPerValidator;
+	type MaxNominatorRewardedPerValidator = ConstU32<64>;
 	type OffendingValidatorsThreshold = OffendingValidatorsThreshold;
 	type NextNewSession = Session;
-	type ElectionProvider = onchain::OnChainSequentialPhragmen<Self>;
+	type ElectionProvider = onchain::UnboundedExecution<OnChainSeqPhragmen>;
 	type GenesisElectionProvider = Self::ElectionProvider;
-	type SortedListProvider = pallet_staking::UseNominatorsMap<Self>;
+	type VoterList = pallet_staking::UseNominatorsAndValidatorsMap<Self>;
+	type TargetList = pallet_staking::UseValidatorsMap<Self>;
+	type MaxUnlockingChunks = ConstU32<32>;
+	type HistoryDepth = ConstU32<84>;
+	type OnStakerSlash = ();
+	type BenchmarkingConfig = pallet_staking::TestBenchmarkingConfig;
 	type WeightInfo = ();
 }
 
 impl pallet_offences::Config for Test {
-	type Event = Event;
+	type RuntimeEvent = RuntimeEvent;
 	type IdentificationTuple = pallet_session::historical::IdentificationTuple<Self>;
 	type OnOffenceHandler = Staking;
 }
@@ -230,12 +247,10 @@ impl pallet_offences::Config for Test {
 parameter_types! {
 	pub const ReportLongevity: u64 =
 		BondingDuration::get() as u64 * SessionsPerEra::get() as u64 * Period::get();
-	pub const MaxAuthorities: u32 = 100;
 }
 
 impl Config for Test {
-	type Event = Event;
-	type Call = Call;
+	type RuntimeEvent = RuntimeEvent;
 
 	type KeyOwnerProofSystem = Historical;
 
@@ -251,7 +266,7 @@ impl Config for Test {
 		super::EquivocationHandler<Self::KeyOwnerIdentification, Offences, ReportLongevity>;
 
 	type WeightInfo = ();
-	type MaxAuthorities = MaxAuthorities;
+	type MaxAuthorities = ConstU32<100>;
 }
 
 pub fn grandpa_log(log: ConsensusLog<u64>) -> DigestItem {
@@ -305,7 +320,7 @@ pub fn new_test_ext_raw_authorities(authorities: AuthorityList) -> sp_io::TestEx
 	// controllers are the index + 1000
 	let stakers: Vec<_> = (0..authorities.len())
 		.map(|i| {
-			(i as u64, i as u64 + 1000, 10_000, pallet_staking::StakerStatus::<u64>::Validator)
+			(i as u64, i as u64 + 1000, 10_000, pallet_staking::StakerStatus::<CmixId, u64>::Validator(cmix_id(i as u8)))
 		})
 		.collect();
 
@@ -337,7 +352,8 @@ pub fn start_session(session_index: SessionIndex) {
 			System::parent_hash()
 		};
 
-		System::initialize(&(i as u64 + 1), &parent_hash, &Default::default(), Default::default());
+		System::reset_events();
+		System::initialize(&(i as u64 + 1), &parent_hash, &Default::default());
 		System::set_block_number((i + 1).into());
 		Timestamp::set_timestamp(System::block_number() * 6000);
 
@@ -356,7 +372,8 @@ pub fn start_era(era_index: EraIndex) {
 }
 
 pub fn initialize_block(number: u64, parent_hash: H256) {
-	System::initialize(&number, &parent_hash, &Default::default(), Default::default());
+	System::reset_events();
+	System::initialize(&number, &parent_hash, &Default::default());
 }
 
 pub fn generate_equivocation_proof(

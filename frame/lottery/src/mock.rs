@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2021 Parity Technologies (UK) Ltd.
+// Copyright (C) 2021-2022 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -22,7 +22,7 @@ use crate as pallet_lottery;
 
 use frame_support::{
 	parameter_types,
-	traits::{OnFinalize, OnInitialize},
+	traits::{ConstU32, ConstU64, OnFinalize, OnInitialize},
 };
 use frame_support_test::TestRandomness;
 use frame_system::EnsureRoot;
@@ -49,9 +49,6 @@ frame_support::construct_runtime!(
 );
 
 parameter_types! {
-	pub const BlockHashCount: u64 = 250;
-	pub const MaximumBlockWeight: u32 = 1024;
-	pub const MaximumBlockLength: u32 = 2 * 1024;
 	pub const AvailableBlockRatio: Perbill = Perbill::one();
 }
 
@@ -60,17 +57,17 @@ impl frame_system::Config for Test {
 	type BlockWeights = ();
 	type BlockLength = ();
 	type DbWeight = ();
-	type Origin = Origin;
+	type RuntimeOrigin = RuntimeOrigin;
 	type Index = u64;
-	type Call = Call;
+	type RuntimeCall = RuntimeCall;
 	type BlockNumber = u64;
 	type Hash = H256;
 	type Hashing = BlakeTwo256;
 	type AccountId = u64;
 	type Lookup = IdentityLookup<Self::AccountId>;
 	type Header = Header;
-	type Event = Event;
-	type BlockHashCount = BlockHashCount;
+	type RuntimeEvent = RuntimeEvent;
+	type BlockHashCount = ConstU64<250>;
 	type Version = ();
 	type PalletInfo = PalletInfo;
 	type AccountData = pallet_balances::AccountData<u64>;
@@ -79,10 +76,7 @@ impl frame_system::Config for Test {
 	type SystemWeightInfo = ();
 	type SS58Prefix = ();
 	type OnSetCode = ();
-}
-
-parameter_types! {
-	pub const ExistentialDeposit: u64 = 1;
+	type MaxConsumers = ConstU32<16>;
 }
 
 impl pallet_balances::Config for Test {
@@ -90,29 +84,27 @@ impl pallet_balances::Config for Test {
 	type MaxReserves = ();
 	type ReserveIdentifier = [u8; 8];
 	type Balance = u64;
-	type Event = Event;
+	type RuntimeEvent = RuntimeEvent;
 	type DustRemoval = ();
-	type ExistentialDeposit = ExistentialDeposit;
+	type ExistentialDeposit = ConstU64<1>;
 	type AccountStore = System;
 	type WeightInfo = ();
 }
 
 parameter_types! {
 	pub const LotteryPalletId: PalletId = PalletId(*b"py/lotto");
-	pub const MaxCalls: u32 = 2;
-	pub const MaxGenerateRandom: u32 = 10;
 }
 
 impl Config for Test {
 	type PalletId = LotteryPalletId;
-	type Call = Call;
+	type RuntimeCall = RuntimeCall;
 	type Currency = Balances;
 	type Randomness = TestRandomness<Self>;
-	type Event = Event;
+	type RuntimeEvent = RuntimeEvent;
 	type ManagerOrigin = EnsureRoot<u64>;
-	type MaxCalls = MaxCalls;
+	type MaxCalls = ConstU32<2>;
 	type ValidateCall = Lottery;
-	type MaxGenerateRandom = MaxGenerateRandom;
+	type MaxGenerateRandom = ConstU32<10>;
 	type WeightInfo = ();
 }
 

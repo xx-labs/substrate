@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2017-2021 Parity Technologies (UK) Ltd.
+// Copyright (C) 2017-2022 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -29,10 +29,11 @@ use sp_core::offchain::OffchainStorage;
 use sp_runtime::{
 	generic::BlockId,
 	traits::{Block as BlockT, HashFor, NumberFor},
-	Justification, Justifications, Storage,
+	Justification, Justifications, StateVersion, Storage,
 };
 use sp_state_machine::{
-	ChildStorageCollection, IndexOperation, OffchainChangesCollection, StorageCollection,
+	backend::AsTrieBackend, ChildStorageCollection, IndexOperation, OffchainChangesCollection,
+	StorageCollection,
 };
 use sp_storage::{ChildInfo, StorageData, StorageKey};
 use std::collections::{HashMap, HashSet};
@@ -70,14 +71,28 @@ pub struct ImportSummary<Block: BlockT> {
 	pub tree_route: Option<sp_blockchain::TreeRoute<Block>>,
 }
 
-/// Import operation wrapper
+/// Finalization operation summary.
+///
+/// Contains information about the block that just got finalized,
+/// including tree heads that became stale at the moment of finalization.
+pub struct FinalizeSummary<Block: BlockT> {
+	/// Last finalized block header.
+	pub header: Block::Header,
+	/// Blocks that were finalized.
+	/// The last entry is the one that has been explicitly finalized.
+	pub finalized: Vec<Block::Hash>,
+	/// Heads that became stale during this finalization operation.
+	pub stale_heads: Vec<Block::Hash>,
+}
+
+/// Import operation wrapper.
 pub struct ClientImportOperation<Block: BlockT, B: Backend<Block>> {
 	/// DB Operation.
 	pub op: B::BlockImportOperation,
 	/// Summary of imported block.
 	pub notify_imported: Option<ImportSummary<Block>>,
-	/// A list of hashes of blocks that got finalized.
-	pub notify_finalized: Vec<Block::Hash>,
+	/// Summary of finalized block.
+	pub notify_finalized: Option<FinalizeSummary<Block>>,
 }
 
 /// Helper function to apply auxiliary data insertion into an operation.
@@ -166,10 +181,15 @@ pub trait BlockImportOperation<Block: BlockT> {
 		&mut self,
 		storage: Storage,
 		commit: bool,
+		state_version: StateVersion,
 	) -> sp_blockchain::Result<Block::Hash>;
 
 	/// Inject storage data into the database replacing any existing data.
-	fn reset_storage(&mut self, storage: Storage) -> sp_blockchain::Result<Block::Hash>;
+	fn reset_storage(
+		&mut self,
+		storage: Storage,
+		state_version: StateVersion,
+	) -> sp_blockchain::Result<Block::Hash>;
 
 	/// Set storage changes.
 	fn update_storage(
@@ -259,6 +279,10 @@ pub trait Finalizer<Block: BlockT, B: Backend<Block>> {
 }
 
 /// Provides access to an auxiliary database.
+///
+/// This is a simple global database not aware of forks. Can be used for storing auxiliary
+/// information like total block weight/difficulty for fork resolution purposes as a common use
+/// case.
 pub trait AuxStore {
 	/// Insert auxiliary data into key-value store.
 	///
@@ -425,7 +449,12 @@ pub trait Backend<Block: BlockT>: AuxStore + Send + Sync {
 	/// Associated blockchain backend type.
 	type Blockchain: BlockchainBackend<Block>;
 	/// Associated state backend type.
-	type State: StateBackend<HashFor<Block>> + Send;
+	type State: StateBackend<HashFor<Block>>
+		+ Send
+		+ AsTrieBackend<
+			HashFor<Block>,
+			TrieBackendStorage = <Self::State as StateBackend<HashFor<Block>>>::TrieBackendStorage,
+		>;
 	/// Offchain workers local storage.
 	type OffchainStorage: OffchainStorage;
 
@@ -476,7 +505,7 @@ pub trait Backend<Block: BlockT>: AuxStore + Send + Sync {
 
 	/// Returns true if state for given block is available.
 	fn have_state_at(&self, hash: &Block::Hash, _number: NumberFor<Block>) -> bool {
-		self.state_at(BlockId::Hash(hash.clone())).is_ok()
+		self.state_at(BlockId::Hash(*hash)).is_ok()
 	}
 
 	/// Returns state backend with post-state of given block.
@@ -484,7 +513,8 @@ pub trait Backend<Block: BlockT>: AuxStore + Send + Sync {
 
 	/// Attempts to revert the chain by `n` blocks. If `revert_finalized` is set it will attempt to
 	/// revert past any finalized block, this is unsafe and can potentially leave the node in an
-	/// inconsistent state.
+	/// inconsistent state. All blocks higher than the best block are also reverted and not counting
+	/// towards `n`.
 	///
 	/// Returns the number of blocks that were successfully reverted and the list of finalized
 	/// blocks that has been reverted.
@@ -523,6 +553,9 @@ pub trait Backend<Block: BlockT>: AuxStore + Send + Sync {
 	/// something that the import of a block would interfere with, e.g. importing
 	/// a new block or calculating the best head.
 	fn get_import_lock(&self) -> &RwLock<()>;
+
+	/// Tells whether the backend requires full-sync mode.
+	fn requires_full_sync(&self) -> bool;
 }
 
 /// Mark for all Backend implementations, that are making use of state data, stored locally.

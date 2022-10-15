@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2021 Parity Technologies (UK) Ltd.
+// Copyright (C) 2021-2022 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -22,7 +22,10 @@
 use super::*;
 
 use frame_benchmarking::{account, benchmarks, whitelisted_caller};
-use frame_support::traits::{EnsureOrigin, OnInitialize};
+use frame_support::{
+	storage::bounded_vec::BoundedVec,
+	traits::{EnsureOrigin, OnInitialize},
+};
 use frame_system::RawOrigin;
 use sp_runtime::traits::{Bounded, Zero};
 
@@ -55,12 +58,12 @@ benchmarks! {
 		let set_code_index: CallIndex = Lottery::<T>::call_to_index(
 			&frame_system::Call::<T>::set_code{ code: vec![] }.into()
 		)?;
-		let already_called: (u32, Vec<CallIndex>) = (
+		let already_called: (u32, BoundedVec<CallIndex, T::MaxCalls>) = (
 			LotteryIndex::<T>::get(),
-			vec![
+			BoundedVec::<CallIndex, T::MaxCalls>::try_from(vec![
 				set_code_index;
 				T::MaxCalls::get().saturating_sub(1) as usize
-			],
+			]).unwrap(),
 		);
 		Participants::<T>::insert(&caller, already_called);
 
@@ -75,7 +78,7 @@ benchmarks! {
 		let calls = vec![frame_system::Call::<T>::remark { remark: vec![] }.into(); n as usize];
 		let origin = T::ManagerOrigin::successful_origin();
 		assert!(CallIndices::<T>::get().is_empty());
-	}: _<T::Origin>(origin, calls)
+	}: _<T::RuntimeOrigin>(origin, calls)
 	verify {
 		if !n.is_zero() {
 			assert!(!CallIndices::<T>::get().is_empty());
@@ -87,7 +90,7 @@ benchmarks! {
 		let end = 10u32.into();
 		let payout = 5u32.into();
 		let origin = T::ManagerOrigin::successful_origin();
-	}: _<T::Origin>(origin, price, end, payout, true)
+	}: _<T::RuntimeOrigin>(origin, price, end, payout, true)
 	verify {
 		assert!(crate::Lottery::<T>::get().is_some());
 	}
@@ -96,7 +99,7 @@ benchmarks! {
 		setup_lottery::<T>(true)?;
 		assert_eq!(crate::Lottery::<T>::get().unwrap().repeat, true);
 		let origin = T::ManagerOrigin::successful_origin();
-	}: _<T::Origin>(origin)
+	}: _<T::RuntimeOrigin>(origin)
 	verify {
 		assert_eq!(crate::Lottery::<T>::get().unwrap().repeat, false);
 	}

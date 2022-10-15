@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2018-2021 Parity Technologies (UK) Ltd.
+// Copyright (C) 2018-2022 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -28,7 +28,7 @@ use sc_consensus::{
 	BlockImport, BlockImportParams, BoxJustificationImport, ForkChoiceStrategy, ImportResult,
 	ImportedAux,
 };
-use sc_network::config::{ProtocolConfig, Role};
+use sc_network::config::Role;
 use sc_network_test::{
 	Block, BlockImportAdapter, FullPeerConfig, Hash, PassThroughVerifier, Peer, PeersClient,
 	PeersFullClient, TestClient, TestNetFactory,
@@ -56,7 +56,8 @@ use substrate_test_runtime_client::runtime::BlockNumber;
 use tokio::runtime::{Handle, Runtime};
 
 use authorities::AuthoritySet;
-use sc_block_builder::BlockBuilderProvider;
+use communication::grandpa_protocol_name;
+use sc_block_builder::{BlockBuilder, BlockBuilderProvider};
 use sc_consensus::LongestChain;
 use sc_keystore::LocalKeystore;
 use sp_application_crypto::key_types::GRANDPA;
@@ -72,6 +73,7 @@ type GrandpaBlockImport = crate::GrandpaBlockImport<
 	LongestChain<substrate_test_runtime_client::Backend, Block>,
 >;
 
+#[derive(Default)]
 struct GrandpaTestNet {
 	peers: Vec<GrandpaPeer>,
 	test_config: TestApi,
@@ -97,7 +99,7 @@ impl GrandpaTestNet {
 impl GrandpaTestNet {
 	fn add_authority_peer(&mut self) {
 		self.add_full_peer_with_config(FullPeerConfig {
-			notifications_protocols: vec![communication::GRANDPA_PROTOCOL_NAME.into()],
+			notifications_protocols: vec![grandpa_protocol_name::NAME.into()],
 			is_authority: true,
 			..Default::default()
 		})
@@ -109,30 +111,15 @@ impl TestNetFactory for GrandpaTestNet {
 	type PeerData = PeerData;
 	type BlockImport = GrandpaBlockImport;
 
-	/// Create new test network with peers and given config.
-	fn from_config(_config: &ProtocolConfig) -> Self {
-		GrandpaTestNet { peers: Vec::new(), test_config: Default::default() }
-	}
-
-	fn default_config() -> ProtocolConfig {
-		// This is unused.
-		ProtocolConfig::default()
-	}
-
 	fn add_full_peer(&mut self) {
 		self.add_full_peer_with_config(FullPeerConfig {
-			notifications_protocols: vec![communication::GRANDPA_PROTOCOL_NAME.into()],
+			notifications_protocols: vec![grandpa_protocol_name::NAME.into()],
 			is_authority: false,
 			..Default::default()
 		})
 	}
 
-	fn make_verifier(
-		&self,
-		_client: PeersClient,
-		_cfg: &ProtocolConfig,
-		_: &PeerData,
-	) -> Self::Verifier {
+	fn make_verifier(&self, _client: PeersClient, _: &PeerData) -> Self::Verifier {
 		PassThroughVerifier::new(false) // use non-instant finality.
 	}
 
@@ -183,7 +170,7 @@ pub(crate) struct RuntimeApi {
 impl ProvideRuntimeApi<Block> for TestApi {
 	type Api = RuntimeApi;
 
-	fn runtime_api<'a>(&'a self) -> ApiRef<'a, Self::Api> {
+	fn runtime_api(&self) -> ApiRef<'_, Self::Api> {
 		RuntimeApi { inner: self.clone() }.into()
 	}
 }
@@ -223,7 +210,7 @@ impl GenesisAuthoritySetProvider<Block> for TestApi {
 const TEST_GOSSIP_DURATION: Duration = Duration::from_millis(500);
 
 fn make_ids(keys: &[Ed25519Keyring]) -> AuthorityList {
-	keys.iter().map(|key| key.clone().public().into()).map(|id| (id, 1)).collect()
+	keys.iter().map(|&key| key.public().into()).map(|id| (id, 1)).collect()
 }
 
 fn create_keystore(authority: Ed25519Keyring) -> (SyncCryptoStorePtr, tempfile::TempDir) {
@@ -274,6 +261,7 @@ fn initialize_grandpa(
 				local_role: Role::Authority,
 				observer_enabled: true,
 				telemetry: None,
+				protocol_name: grandpa_protocol_name::NAME.into(),
 			},
 			link,
 			network: net_service,
@@ -423,6 +411,7 @@ fn finalize_3_voters_1_full_observer() {
 				local_role: Role::Authority,
 				observer_enabled: true,
 				telemetry: None,
+				protocol_name: grandpa_protocol_name::NAME.into(),
 			},
 			link,
 			network: net_service,
@@ -461,7 +450,7 @@ fn finalize_3_voters_1_full_observer() {
 		let justification =
 			crate::aux_schema::best_justification::<_, Block>(&*client).unwrap().unwrap();
 
-		assert_eq!(justification.commit.target_number, 20);
+		assert_eq!(justification.justification.commit.target_number, 20);
 	}
 }
 
@@ -513,6 +502,7 @@ fn transition_3_voters_twice_1_full_observer() {
 				local_role: Role::Authority,
 				observer_enabled: true,
 				telemetry: None,
+				protocol_name: grandpa_protocol_name::NAME.into(),
 			},
 			link,
 			network: net_service,
@@ -543,7 +533,7 @@ fn transition_3_voters_twice_1_full_observer() {
 	{
 		let net = net.clone();
 		let client = net.lock().peers[0].client().clone();
-		let peers_c = peers_c.clone();
+		let peers_c = *peers_c;
 
 		// wait for blocks to be finalized before generating new ones
 		let block_production = client
@@ -971,6 +961,7 @@ fn voter_persists_its_votes() {
 			local_role: Role::Authority,
 			observer_enabled: true,
 			telemetry: None,
+			protocol_name: grandpa_protocol_name::NAME.into(),
 		};
 
 		let set_state = {
@@ -1010,6 +1001,7 @@ fn voter_persists_its_votes() {
 				local_role: Role::Authority,
 				observer_enabled: true,
 				telemetry: None,
+				protocol_name: grandpa_protocol_name::NAME.into(),
 			},
 			link,
 			network: net_service,
@@ -1050,6 +1042,7 @@ fn voter_persists_its_votes() {
 				local_role: Role::Authority,
 				observer_enabled: true,
 				telemetry: None,
+				protocol_name: grandpa_protocol_name::NAME.into(),
 			},
 			link,
 			network: net_service,
@@ -1213,6 +1206,7 @@ fn finalize_3_voters_1_light_observer() {
 			local_role: Role::Full,
 			observer_enabled: true,
 			telemetry: None,
+			protocol_name: grandpa_protocol_name::NAME.into(),
 		},
 		net.peers[3].data.lock().take().expect("link initialized at startup; qed"),
 		net.peers[3].network_service().clone(),
@@ -1259,6 +1253,7 @@ fn voter_catches_up_to_latest_round_when_behind() {
 				local_role: Role::Authority,
 				observer_enabled: true,
 				telemetry: None,
+				protocol_name: grandpa_protocol_name::NAME.into(),
 			},
 			link,
 			network: net.lock().peer(peer_id).network_service().clone(),
@@ -1376,6 +1371,7 @@ where
 		local_role: Role::Authority,
 		observer_enabled: true,
 		telemetry: None,
+		protocol_name: grandpa_protocol_name::NAME.into(),
 	};
 
 	let network =
@@ -1560,6 +1556,73 @@ fn grandpa_environment_never_overwrites_round_voter_state() {
 }
 
 #[test]
+fn justification_with_equivocation() {
+	use sp_application_crypto::Pair;
+
+	// we have 100 authorities
+	let pairs = (0..100).map(|n| AuthorityPair::from_seed(&[n; 32])).collect::<Vec<_>>();
+	let voters = pairs.iter().map(AuthorityPair::public).map(|id| (id, 1)).collect::<Vec<_>>();
+	let api = TestApi::new(voters.clone());
+	let mut net = GrandpaTestNet::new(api.clone(), 1, 0);
+
+	// we create a basic chain with 3 blocks (no forks)
+	net.peer(0).push_blocks(3, false);
+
+	let client = net.peer(0).client().clone();
+	let block1 = client.header(&BlockId::Number(1)).ok().flatten().unwrap();
+	let block2 = client.header(&BlockId::Number(2)).ok().flatten().unwrap();
+	let block3 = client.header(&BlockId::Number(3)).ok().flatten().unwrap();
+
+	let set_id = 0;
+	let justification = {
+		let round = 1;
+
+		let make_precommit = |target_hash, target_number, pair: &AuthorityPair| {
+			let precommit = finality_grandpa::Precommit { target_hash, target_number };
+
+			let msg = finality_grandpa::Message::Precommit(precommit.clone());
+			let encoded = sp_finality_grandpa::localized_payload(round, set_id, &msg);
+
+			let precommit = finality_grandpa::SignedPrecommit {
+				precommit: precommit.clone(),
+				signature: pair.sign(&encoded[..]),
+				id: pair.public(),
+			};
+
+			precommit
+		};
+
+		let mut precommits = Vec::new();
+
+		// we have 66/100 votes for block #3 and therefore do not have threshold to finalize
+		for pair in pairs.iter().take(66) {
+			let precommit = make_precommit(block3.hash(), *block3.number(), pair);
+			precommits.push(precommit);
+		}
+
+		// we create an equivocation for the 67th validator targetting blocks #1 and #2.
+		// this should be accounted as "voting for all blocks" and therefore block #3 will
+		// have 67/100 votes, reaching finality threshold.
+		{
+			precommits.push(make_precommit(block1.hash(), *block1.number(), &pairs[66]));
+			precommits.push(make_precommit(block2.hash(), *block2.number(), &pairs[66]));
+		}
+
+		let commit = finality_grandpa::Commit {
+			target_hash: block3.hash(),
+			target_number: *block3.number(),
+			precommits,
+		};
+
+		GrandpaJustification::from_commit(&client.as_client(), round, commit).unwrap()
+	};
+
+	// the justification should include the minimal necessary vote ancestry and
+	// the commit should be valid
+	assert!(justification.verify(set_id, &voters).is_ok());
+}
+
+#[test]
 fn imports_justification_for_regular_blocks_on_import() {
 	// NOTE: this is a regression test since initially we would only import
 	// justifications for authority change blocks, and would discard any
@@ -1671,7 +1734,132 @@ fn grandpa_environment_doesnt_send_equivocation_reports_for_itself() {
 
 	// if we set the equivocation offender to another id for which we don't have
 	// keys it should work
-	equivocation.identity = Default::default();
+	equivocation.identity = TryFrom::try_from(&[1; 32][..]).unwrap();
 	let equivocation_proof = sp_finality_grandpa::Equivocation::Prevote(equivocation);
 	assert!(environment.report_equivocation(equivocation_proof).is_ok());
+}
+
+#[test]
+fn revert_prunes_authority_changes() {
+	sp_tracing::try_init_simple();
+	let runtime = Runtime::new().unwrap();
+
+	let peers = &[Ed25519Keyring::Alice, Ed25519Keyring::Bob, Ed25519Keyring::Charlie];
+
+	type TestBlockBuilder<'a> =
+		BlockBuilder<'a, Block, PeersFullClient, substrate_test_runtime_client::Backend>;
+	let edit_block = |builder: TestBlockBuilder| {
+		let mut block = builder.build().unwrap().block;
+		add_scheduled_change(
+			&mut block,
+			ScheduledChange { next_authorities: make_ids(peers), delay: 0 },
+		);
+		block
+	};
+
+	let api = TestApi::new(make_ids(peers));
+	let mut net = GrandpaTestNet::new(api, 3, 0);
+	runtime.spawn(initialize_grandpa(&mut net, peers));
+
+	let peer = net.peer(0);
+	let client = peer.client().as_client();
+
+	// Test scenario: (X) = auth-change, 24 = revert-point
+	//
+	//              +---------(27)
+	//             /
+	// 0---(21)---23---24---25---(28)---30
+	//                  ^    \
+	//        revert-point    +------(29)
+
+	// Construct canonical chain
+
+	// add 20 blocks
+	peer.push_blocks(20, false);
+	// at block 21 we add an authority transition
+	peer.generate_blocks(1, BlockOrigin::File, edit_block);
+	// add more blocks on top of it (until we have 24)
+	peer.push_blocks(3, false);
+	// add more blocks on top of it (until we have 27)
+	peer.push_blocks(3, false);
+	// at block 28 we add an authority transition
+	peer.generate_blocks(1, BlockOrigin::File, edit_block);
+	// add more blocks on top of it (until we have 30)
+	peer.push_blocks(2, false);
+
+	// Fork before revert point
+
+	// add more blocks on top of block 23 (until we have 26)
+	let hash = peer.generate_blocks_at(
+		BlockId::Number(23),
+		3,
+		BlockOrigin::File,
+		|builder| {
+			let mut block = builder.build().unwrap().block;
+			block.header.digest_mut().push(DigestItem::Other(vec![1]));
+			block
+		},
+		false,
+		false,
+		true,
+		ForkChoiceStrategy::LongestChain,
+	);
+	// at block 27 of the fork add an authority transition
+	peer.generate_blocks_at(
+		BlockId::Hash(hash),
+		1,
+		BlockOrigin::File,
+		edit_block,
+		false,
+		false,
+		true,
+		ForkChoiceStrategy::LongestChain,
+	);
+
+	// Fork after revert point
+
+	// add more block on top of block 25 (until we have 28)
+	let hash = peer.generate_blocks_at(
+		BlockId::Number(25),
+		3,
+		BlockOrigin::File,
+		|builder| {
+			let mut block = builder.build().unwrap().block;
+			block.header.digest_mut().push(DigestItem::Other(vec![2]));
+			block
+		},
+		false,
+		false,
+		true,
+		ForkChoiceStrategy::LongestChain,
+	);
+	// at block 29 of the fork add an authority transition
+	peer.generate_blocks_at(
+		BlockId::Hash(hash),
+		1,
+		BlockOrigin::File,
+		edit_block,
+		false,
+		false,
+		true,
+		ForkChoiceStrategy::LongestChain,
+	);
+
+	revert(client.clone(), 6).unwrap();
+
+	let persistent_data: PersistentData<Block> = aux_schema::load_persistent(
+		&*client,
+		client.info().genesis_hash,
+		Zero::zero(),
+		|| unreachable!(),
+	)
+	.unwrap();
+	let changes_num: Vec<_> = persistent_data
+		.authority_set
+		.inner()
+		.pending_standard_changes
+		.iter()
+		.map(|(_, n, _)| *n)
+		.collect();
+	assert_eq!(changes_num, [21, 27]);
 }

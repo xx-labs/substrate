@@ -193,7 +193,7 @@ fn transfer_cmix_id_works() {
                     stash: 10,
                     total: 100,
                     active: 100,
-                    unlocking: vec![],
+                    unlocking: Default::default(),
                     claimed_rewards: vec![],
                     cmix_id: cmix_id(10u8)
                 })
@@ -204,7 +204,7 @@ fn transfer_cmix_id_works() {
                     stash: 12,
                     total: 100,
                     active: 100,
-                    unlocking: vec![],
+                    unlocking: Default::default(),
                     claimed_rewards: vec![],
                     cmix_id: None
                 })
@@ -220,7 +220,7 @@ fn transfer_cmix_id_works() {
                     stash: 10,
                     total: 100,
                     active: 100,
-                    unlocking: vec![],
+                    unlocking: Default::default(),
                     claimed_rewards: vec![],
                     cmix_id: None
                 })
@@ -231,7 +231,7 @@ fn transfer_cmix_id_works() {
                     stash: 12,
                     total: 100,
                     active: 100,
-                    unlocking: vec![],
+                    unlocking: Default::default(),
                     claimed_rewards: vec![],
                     cmix_id: cmix_id(10u8)
                 })
@@ -744,31 +744,6 @@ fn cannot_deduct_below_one() {
         );
     })
 }
-
-//////////////////////////////////////////
-//             Rewards Pool             //
-//////////////////////////////////////////
-
-#[test]
-fn reward_handler_called_on_do_payout_stakers() {
-   ExtBuilder::default()
-        .build_and_execute(|| {
-            let init_11 = Balances::total_balance(&11);
-
-            // give 11 some points
-            <Pallet<Test>>::reward_by_ids(vec![(11, 80)]);
-
-            let total_payout_0 = current_total_payout_for_duration(reward_time_per_era());
-
-            // there are 3 sessions per era in this test config so we are now in era 2
-            start_session(3);
-            make_all_reward_payment(0);
-
-            assert!(Balances::total_balance(&11) > init_11);
-            assert_eq!(mock::RewardMock::total(), total_payout_0);
-        })
-}
-
 
 //////////////////////////////////////////
 //       Min Validator Commission       //

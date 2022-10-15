@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2019-2021 Parity Technologies (UK) Ltd.
+// Copyright (C) 2019-2022 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -42,13 +42,30 @@ impl Timestamp {
 	}
 
 	/// Returns `self` as [`Duration`].
-	pub fn as_duration(self) -> Duration {
+	pub const fn as_duration(self) -> Duration {
 		Duration::from_millis(self.0)
+	}
+
+	/// Returns `self` as a `u64` representing the elapsed time since the UNIX_EPOCH in
+	/// milliseconds.
+	pub const fn as_millis(&self) -> u64 {
+		self.0
 	}
 
 	/// Checked subtraction that returns `None` on an underflow.
 	pub fn checked_sub(self, other: Self) -> Option<Self> {
 		self.0.checked_sub(other.0).map(Self)
+	}
+
+	/// The current timestamp using the system time.
+	#[cfg(feature = "std")]
+	pub fn current() -> Self {
+		use std::time::SystemTime;
+
+		let now = SystemTime::now();
+		now.duration_since(SystemTime::UNIX_EPOCH)
+			.expect("Current time is always after unix epoch; qed")
+			.into()
 	}
 }
 
@@ -138,9 +155,9 @@ impl IsFatalError for InherentError {
 impl InherentError {
 	/// Try to create an instance ouf of the given identifier and data.
 	#[cfg(feature = "std")]
-	pub fn try_from(id: &InherentIdentifier, data: &[u8]) -> Option<Self> {
+	pub fn try_from(id: &InherentIdentifier, mut data: &[u8]) -> Option<Self> {
 		if id == &INHERENT_IDENTIFIER {
-			<InherentError as codec::Decode>::decode(&mut &data[..]).ok()
+			<InherentError as codec::Decode>::decode(&mut data).ok()
 		} else {
 			None
 		}
@@ -159,18 +176,6 @@ impl TimestampInherentData for InherentData {
 	}
 }
 
-/// The current timestamp using the system time.
-///
-/// This timestamp is the time since the UNIX epoch.
-#[cfg(feature = "std")]
-fn current_timestamp() -> std::time::Duration {
-	use std::time::SystemTime;
-
-	let now = SystemTime::now();
-	now.duration_since(SystemTime::UNIX_EPOCH)
-		.expect("Current time is always after unix epoch; qed")
-}
-
 /// Provide duration since unix epoch in millisecond for timestamp inherent.
 #[cfg(feature = "std")]
 pub struct InherentDataProvider {
@@ -184,7 +189,7 @@ impl InherentDataProvider {
 	pub fn from_system_time() -> Self {
 		Self {
 			max_drift: std::time::Duration::from_secs(60).into(),
-			timestamp: current_timestamp().into(),
+			timestamp: Timestamp::current(),
 		}
 	}
 
@@ -227,7 +232,7 @@ impl sp_inherents::InherentDataProvider for InherentDataProvider {
 		&self,
 		inherent_data: &mut InherentData,
 	) -> Result<(), sp_inherents::Error> {
-		inherent_data.put_data(INHERENT_IDENTIFIER, &InherentType::from(self.timestamp))
+		inherent_data.put_data(INHERENT_IDENTIFIER, &self.timestamp)
 	}
 
 	async fn try_handle_error(

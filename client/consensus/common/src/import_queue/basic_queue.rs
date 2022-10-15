@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2017-2021 Parity Technologies (UK) Ltd.
+// Copyright (C) 2017-2022 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -34,7 +34,7 @@ use crate::{
 	import_queue::{
 		buffered_link::{self, BufferedLinkReceiver, BufferedLinkSender},
 		import_single_block_metered, BlockImportError, BlockImportStatus, BoxBlockImport,
-		BoxJustificationImport, ImportQueue, IncomingBlock, Link, Origin, Verifier,
+		BoxJustificationImport, ImportQueue, IncomingBlock, Link, RuntimeOrigin, Verifier,
 	},
 	metrics::Metrics,
 };
@@ -120,7 +120,7 @@ impl<B: BlockT, Transaction: Send> ImportQueue<B> for BasicQueue<B, Transaction>
 
 	fn import_justifications(
 		&mut self,
-		who: Origin,
+		who: RuntimeOrigin,
 		hash: B::Hash,
 		number: NumberFor<B>,
 		justifications: Justifications,
@@ -152,7 +152,7 @@ mod worker_messages {
 
 	pub struct ImportBlocks<B: BlockT>(pub BlockOrigin, pub Vec<IncomingBlock<B>>);
 	pub struct ImportJustification<B: BlockT>(
-		pub Origin,
+		pub RuntimeOrigin,
 		pub B::Hash,
 		pub NumberFor<B>,
 		pub Justification,
@@ -289,7 +289,7 @@ impl<B: BlockT> BlockImportWorker<B> {
 
 	async fn import_justification(
 		&mut self,
-		who: Origin,
+		who: RuntimeOrigin,
 		hash: B::Hash,
 		number: NumberFor<B>,
 		justification: Justification,
@@ -303,11 +303,11 @@ impl<B: BlockT> BlockImportWorker<B> {
 				.map_err(|e| {
 					debug!(
 						target: "sync",
-						"Justification import failed with {:?} for hash: {:?} number: {:?} coming from node: {:?}",
-						e,
+						"Justification import failed for hash = {:?} with number = {:?} coming from node = {:?} with error: {}",
 						hash,
 						number,
 						who,
+						e,
 					);
 					e
 				})
@@ -374,7 +374,7 @@ async fn import_many_blocks<B: BlockT, V: Verifier<B>, Transaction: Send + 'stat
 			},
 		};
 
-		let block_number = block.header.as_ref().map(|h| h.number().clone());
+		let block_number = block.header.as_ref().map(|h| *h.number());
 		let block_hash = block.hash;
 		let import_result = if has_error {
 			Err(BlockImportError::Cancelled)
@@ -382,7 +382,7 @@ async fn import_many_blocks<B: BlockT, V: Verifier<B>, Transaction: Send + 'stat
 			// The actual import.
 			import_single_block_metered(
 				import_handle,
-				blocks_origin.clone(),
+				blocks_origin,
 				block,
 				verifier,
 				metrics.clone(),
@@ -530,12 +530,12 @@ mod tests {
 
 		fn justification_imported(
 			&mut self,
-			_who: Origin,
+			_who: RuntimeOrigin,
 			hash: &Hash,
 			_number: BlockNumber,
 			_success: bool,
 		) {
-			self.events.push(Event::JustificationImported(hash.clone()))
+			self.events.push(Event::JustificationImported(*hash))
 		}
 	}
 

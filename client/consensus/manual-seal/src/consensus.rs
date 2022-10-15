@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2020-2021 Parity Technologies (UK) Ltd.
+// Copyright (C) 2020-2022 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -23,7 +23,9 @@ use sc_consensus::BlockImportParams;
 use sp_inherents::InherentData;
 use sp_runtime::{traits::Block as BlockT, Digest};
 
+pub mod aura;
 pub mod babe;
+pub mod timestamp;
 
 /// Consensus data provider, manual seal uses this trait object for authoring blocks valid
 /// for any runtime.
@@ -31,14 +33,18 @@ pub trait ConsensusDataProvider<B: BlockT>: Send + Sync {
 	/// Block import transaction type
 	type Transaction;
 
+	/// The proof type.
+	type Proof;
+
 	/// Attempt to create a consensus digest.
 	fn create_digest(&self, parent: &B::Header, inherents: &InherentData) -> Result<Digest, Error>;
 
-	/// set up the neccessary import params.
+	/// Set up the necessary import params.
 	fn append_block_import(
 		&self,
 		parent: &B::Header,
 		params: &mut BlockImportParams<B, Self::Transaction>,
 		inherents: &InherentData,
+		proof: Self::Proof,
 	) -> Result<(), Error>;
 }

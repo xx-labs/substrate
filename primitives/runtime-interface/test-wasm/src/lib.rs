@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2019-2021 Parity Technologies (UK) Ltd.
+// Copyright (C) 2019-2022 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -22,7 +22,7 @@
 use sp_runtime_interface::runtime_interface;
 
 #[cfg(not(feature = "std"))]
-use sp_std::{convert::TryFrom, mem, prelude::*};
+use sp_std::{mem, prelude::*};
 
 use sp_core::{sr25519::Public, wasm_export_functions};
 
@@ -58,6 +58,18 @@ pub trait TestApi {
 	/// data)
 	fn return_16kb() -> Vec<u32> {
 		vec![0; 4 * 1024]
+	}
+
+	fn return_option_vec() -> Option<Vec<u8>> {
+		let mut vec = Vec::new();
+		vec.resize(16 * 1024, 0xAA);
+		Some(vec)
+	}
+
+	fn return_option_bytes() -> Option<bytes::Bytes> {
+		let mut vec = Vec::new();
+		vec.resize(16 * 1024, 0xAA);
+		Some(vec.into())
 	}
 
 	/// Set the storage at key with value.
@@ -120,6 +132,15 @@ pub trait TestApi {
 
 	#[version(2)]
 	fn test_versionning(&self, data: u32) -> bool {
+		data == 42
+	}
+
+	fn test_versionning_register_only(&self, data: u32) -> bool {
+		data == 80
+	}
+
+	#[version(2, register_only)]
+	fn test_versionning_register_only(&self, data: u32) -> bool {
 		data == 42
 	}
 
@@ -271,6 +292,13 @@ wasm_export_functions! {
 		assert!(!test_api::test_versionning(102));
 	}
 
+	fn test_versionning_register_only_works() {
+		// Ensure that we will import the version of the runtime interface function that
+		// isn't tagged with `register_only`.
+		assert!(!test_api::test_versionning_register_only(42));
+		assert!(test_api::test_versionning_register_only(80));
+	}
+
 	fn test_return_input_as_tuple() {
 		let a = vec![1, 3, 4, 5];
 		let b = 10000;
@@ -283,5 +311,13 @@ wasm_export_functions! {
 		assert_eq!(b, res.1);
 		assert_eq!(c, res.2);
 		assert_eq!(d, res.3);
+	}
+
+	fn test_return_option_vec() {
+		test_api::return_option_vec();
+	}
+
+	fn test_return_option_bytes() {
+		test_api::return_option_bytes();
 	}
 }

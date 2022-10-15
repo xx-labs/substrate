@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2020-2021 Parity Technologies (UK) Ltd.
+// Copyright (C) 2020-2022 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -19,14 +19,17 @@ use crate as pallet_mmr;
 use crate::*;
 
 use codec::{Decode, Encode};
-use frame_support::parameter_types;
-use pallet_mmr_primitives::{Compact, LeafDataProvider};
+use frame_support::{
+	parameter_types,
+	traits::{ConstU32, ConstU64},
+};
 use sp_core::H256;
+use sp_mmr_primitives::{Compact, LeafDataProvider};
 use sp_runtime::{
 	testing::Header,
 	traits::{BlakeTwo256, IdentityLookup, Keccak256},
 };
-use sp_std::{cell::RefCell, prelude::*};
+use sp_std::prelude::*;
 
 type UncheckedExtrinsic = frame_system::mocking::MockUncheckedExtrinsic<Test>;
 type Block = frame_system::mocking::MockBlock<Test>;
@@ -42,13 +45,10 @@ frame_support::construct_runtime!(
 	}
 );
 
-parameter_types! {
-	pub const BlockHashCount: u64 = 250;
-}
 impl frame_system::Config for Test {
 	type BaseCallFilter = frame_support::traits::Everything;
-	type Origin = Origin;
-	type Call = Call;
+	type RuntimeOrigin = RuntimeOrigin;
+	type RuntimeCall = RuntimeCall;
 	type Index = u64;
 	type BlockNumber = u64;
 	type Hash = H256;
@@ -56,8 +56,8 @@ impl frame_system::Config for Test {
 	type AccountId = sp_core::sr25519::Public;
 	type Lookup = IdentityLookup<Self::AccountId>;
 	type Header = Header;
-	type Event = Event;
-	type BlockHashCount = BlockHashCount;
+	type RuntimeEvent = RuntimeEvent;
+	type BlockHashCount = ConstU64<250>;
 	type DbWeight = ();
 	type BlockWeights = ();
 	type BlockLength = ();
@@ -69,6 +69,7 @@ impl frame_system::Config for Test {
 	type SystemWeightInfo = ();
 	type SS58Prefix = ();
 	type OnSetCode = ();
+	type MaxConsumers = ConstU32<16>;
 }
 
 impl Config for Test {
@@ -76,7 +77,7 @@ impl Config for Test {
 
 	type Hashing = Keccak256;
 	type Hash = H256;
-	type LeafData = Compact<Keccak256, (frame_system::Pallet<Test>, LeafData)>;
+	type LeafData = Compact<Keccak256, (ParentNumberAndHash<Test>, LeafData)>;
 	type OnNewRoot = ();
 	type WeightInfo = ();
 }
@@ -93,14 +94,14 @@ impl LeafData {
 	}
 }
 
-thread_local! {
-	pub static LEAF_DATA: RefCell<LeafData> = RefCell::new(Default::default());
+parameter_types! {
+	pub static LeafDataTestValue: LeafData = Default::default();
 }
 
 impl LeafDataProvider for LeafData {
 	type LeafData = Self;
 
 	fn leaf_data() -> Self::LeafData {
-		LEAF_DATA.with(|r| r.borrow().clone())
+		LeafDataTestValue::get().clone()
 	}
 }

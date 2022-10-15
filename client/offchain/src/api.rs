@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2019-2021 Parity Technologies (UK) Ltd.
+// Copyright (C) 2019-2022 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -16,13 +16,13 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use std::{collections::HashSet, convert::TryFrom, str::FromStr, sync::Arc, thread::sleep};
+use std::{collections::HashSet, str::FromStr, sync::Arc, thread::sleep};
 
 use crate::NetworkProvider;
 use codec::{Decode, Encode};
 use futures::Future;
 pub use http::SharedClient;
-use sc_network::{Multiaddr, PeerId};
+use libp2p::{Multiaddr, PeerId};
 use sp_core::{
 	offchain::{
 		self, HttpError, HttpRequestId, HttpRequestStatus, OffchainStorage, OpaqueMultiaddr,
@@ -37,10 +37,11 @@ mod http;
 mod timestamp;
 
 fn unavailable_yet<R: Default>(name: &str) -> R {
-	log::error!(
-		target: "sc_offchain",
+	tracing::error!(
+		target: super::LOG_TARGET,
 		"The {:?} API is not available for offchain workers yet. Follow \
-		https://github.com/paritytech/substrate/issues/1458 for details", name
+		https://github.com/paritytech/substrate/issues/1458 for details",
+		name
 	);
 	Default::default()
 }
@@ -75,9 +76,12 @@ impl<Storage: OffchainStorage> Db<Storage> {
 
 impl<Storage: OffchainStorage> offchain::DbExternalities for Db<Storage> {
 	fn local_storage_set(&mut self, kind: StorageKind, key: &[u8], value: &[u8]) {
-		log::debug!(
-			target: "sc_offchain",
-			"{:?}: Write: {:?} <= {:?}", kind, hex::encode(key), hex::encode(value)
+		tracing::debug!(
+			target: "offchain-worker::storage",
+			?kind,
+			key = ?array_bytes::bytes2hex("", key),
+			value = ?array_bytes::bytes2hex("", value),
+			"Write",
 		);
 		match kind {
 			StorageKind::PERSISTENT => self.persistent.set(STORAGE_PREFIX, key, value),
@@ -86,9 +90,11 @@ impl<Storage: OffchainStorage> offchain::DbExternalities for Db<Storage> {
 	}
 
 	fn local_storage_clear(&mut self, kind: StorageKind, key: &[u8]) {
-		log::debug!(
-			target: "sc_offchain",
-			"{:?}: Clear: {:?}", kind, hex::encode(key)
+		tracing::debug!(
+			target: "offchain-worker::storage",
+			?kind,
+			key = ?array_bytes::bytes2hex("", key),
+			"Clear",
 		);
 		match kind {
 			StorageKind::PERSISTENT => self.persistent.remove(STORAGE_PREFIX, key),
@@ -103,13 +109,13 @@ impl<Storage: OffchainStorage> offchain::DbExternalities for Db<Storage> {
 		old_value: Option<&[u8]>,
 		new_value: &[u8],
 	) -> bool {
-		log::debug!(
-			target: "sc_offchain",
-			"{:?}: CAS: {:?} <= {:?} vs {:?}",
-			kind,
-			hex::encode(key),
-			hex::encode(new_value),
-			old_value.as_ref().map(hex::encode),
+		tracing::debug!(
+			target: "offchain-worker::storage",
+			?kind,
+			key = ?array_bytes::bytes2hex("", key),
+			new_value = ?array_bytes::bytes2hex("", new_value),
+			old_value = ?old_value.as_ref().map(|s| array_bytes::bytes2hex("", s)),
+			"CAS",
 		);
 		match kind {
 			StorageKind::PERSISTENT =>
@@ -123,12 +129,12 @@ impl<Storage: OffchainStorage> offchain::DbExternalities for Db<Storage> {
 			StorageKind::PERSISTENT => self.persistent.get(STORAGE_PREFIX, key),
 			StorageKind::LOCAL => unavailable_yet(LOCAL_DB),
 		};
-		log::debug!(
-			target: "sc_offchain",
-			"{:?}: Read: {:?} => {:?}",
-			kind,
-			hex::encode(key),
-			result.as_ref().map(hex::encode)
+		tracing::debug!(
+			target: "offchain-worker::storage",
+			?kind,
+			key = ?array_bytes::bytes2hex("", key),
+			result = ?result.as_ref().map(|s| array_bytes::bytes2hex("", s)),
+			"Read",
 		);
 		result
 	}
@@ -318,23 +324,90 @@ impl AsyncApi {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use libp2p::PeerId;
 	use sc_client_db::offchain::LocalStorage;
-	use sc_network::{NetworkStateInfo, PeerId};
-	use sp_core::offchain::{DbExternalities, Externalities};
-	use std::{
-		convert::{TryFrom, TryInto},
-		time::SystemTime,
+	use sc_network_common::{
+		config::MultiaddrWithPeerId,
+		protocol::ProtocolName,
+		service::{NetworkPeers, NetworkStateInfo},
 	};
+	use sc_peerset::ReputationChange;
+	use sp_core::offchain::{DbExternalities, Externalities};
+	use std::time::SystemTime;
 
 	pub(super) struct TestNetwork();
 
-	impl NetworkProvider for TestNetwork {
+	impl NetworkPeers for TestNetwork {
 		fn set_authorized_peers(&self, _peers: HashSet<PeerId>) {
-			unimplemented!()
+			unimplemented!();
 		}
 
 		fn set_authorized_only(&self, _reserved_only: bool) {
-			unimplemented!()
+			unimplemented!();
+		}
+
+		fn add_known_address(&self, _peer_id: PeerId, _addr: Multiaddr) {
+			unimplemented!();
+		}
+
+		fn report_peer(&self, _who: PeerId, _cost_benefit: ReputationChange) {
+			unimplemented!();
+		}
+
+		fn disconnect_peer(&self, _who: PeerId, _protocol: ProtocolName) {
+			unimplemented!();
+		}
+
+		fn accept_unreserved_peers(&self) {
+			unimplemented!();
+		}
+
+		fn deny_unreserved_peers(&self) {
+			unimplemented!();
+		}
+
+		fn add_reserved_peer(&self, _peer: MultiaddrWithPeerId) -> Result<(), String> {
+			unimplemented!();
+		}
+
+		fn remove_reserved_peer(&self, _peer_id: PeerId) {
+			unimplemented!();
+		}
+
+		fn set_reserved_peers(
+			&self,
+			_protocol: ProtocolName,
+			_peers: HashSet<Multiaddr>,
+		) -> Result<(), String> {
+			unimplemented!();
+		}
+
+		fn add_peers_to_reserved_set(
+			&self,
+			_protocol: ProtocolName,
+			_peers: HashSet<Multiaddr>,
+		) -> Result<(), String> {
+			unimplemented!();
+		}
+
+		fn remove_peers_from_reserved_set(&self, _protocol: ProtocolName, _peers: Vec<PeerId>) {
+			unimplemented!();
+		}
+
+		fn add_to_peers_set(
+			&self,
+			_protocol: ProtocolName,
+			_peers: HashSet<Multiaddr>,
+		) -> Result<(), String> {
+			unimplemented!();
+		}
+
+		fn remove_from_peers_set(&self, _protocol: ProtocolName, _peers: Vec<PeerId>) {
+			unimplemented!();
+		}
+
+		fn sync_num_connected(&self) -> usize {
+			unimplemented!();
 		}
 	}
 

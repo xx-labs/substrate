@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2017-2021 Parity Technologies (UK) Ltd.
+// Copyright (C) 2017-2022 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -17,28 +17,24 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use super::{client::ClientConfig, wasm_override::WasmOverride, wasm_substitutes::WasmSubstitutes};
-use codec::{Decode, Encode};
 use sc_client_api::{backend, call_executor::CallExecutor, HeaderBackend};
 use sc_executor::{RuntimeVersion, RuntimeVersionOf};
 use sp_api::{ProofRecorder, StorageTransactionCache};
-use sp_core::{
-	traits::{CodeExecutor, RuntimeCode, SpawnNamed},
-	NativeOrEncoded, NeverNativeValue,
-};
+use sp_core::traits::{CodeExecutor, RuntimeCode, SpawnNamed};
 use sp_externalities::Extensions;
 use sp_runtime::{generic::BlockId, traits::Block as BlockT};
 use sp_state_machine::{
-	self, backend::Backend as _, ExecutionManager, ExecutionStrategy, Ext, OverlayedChanges,
+	backend::AsTrieBackend, ExecutionManager, ExecutionStrategy, Ext, OverlayedChanges,
 	StateMachine, StorageProof,
 };
-use std::{cell::RefCell, panic::UnwindSafe, result, sync::Arc};
+use std::{cell::RefCell, sync::Arc};
 
 /// Call executor that executes methods locally, querying all required
 /// data from local backend.
 pub struct LocalCallExecutor<Block: BlockT, B, E> {
 	backend: Arc<B>,
 	executor: E,
-	wasm_override: Option<WasmOverride>,
+	wasm_override: Arc<Option<WasmOverride>>,
 	wasm_substitutes: WasmSubstitutes<Block, E, B>,
 	spawn_handle: Box<dyn SpawnNamed>,
 	client_config: ClientConfig<Block>,
@@ -71,7 +67,7 @@ where
 		Ok(LocalCallExecutor {
 			backend,
 			executor,
-			wasm_override,
+			wasm_override: Arc::new(wasm_override),
 			spawn_handle,
 			client_config,
 			wasm_substitutes,
@@ -90,26 +86,27 @@ where
 		Block: BlockT,
 		B: backend::Backend<Block>,
 	{
-		let spec = self.runtime_version(id)?.spec_version;
-		let code = if let Some(d) = self
-			.wasm_override
-			.as_ref()
-			.map(|o| o.get(&spec, onchain_code.heap_pages))
-			.flatten()
-		{
-			log::debug!(target: "wasm_overrides", "using WASM override for block {}", id);
-			d
-		} else if let Some(s) = self.wasm_substitutes.get(spec, onchain_code.heap_pages, id) {
-			log::debug!(target: "wasm_substitutes", "Using WASM substitute for block {:?}", id);
-			s
-		} else {
-			log::debug!(
-				target: "wasm_overrides",
-				"No WASM override available for block {}, using onchain code",
-				id
-			);
-			onchain_code
-		};
+		let spec = CallExecutor::runtime_version(self, id)?;
+		let code =
+			if let Some(d) =
+				self.wasm_override.as_ref().as_ref().and_then(|o| {
+					o.get(&spec.spec_version, onchain_code.heap_pages, &spec.spec_name)
+				}) {
+				log::debug!(target: "wasm_overrides", "using WASM override for block {}", id);
+				d
+			} else if let Some(s) =
+				self.wasm_substitutes.get(spec.spec_version, onchain_code.heap_pages, id)
+			{
+				log::debug!(target: "wasm_substitutes", "Using WASM substitute for block {:?}", id);
+				s
+			} else {
+				log::debug!(
+					target: "wasm_overrides",
+					"No WASM override available for block {}, using onchain code",
+					id
+				);
+				onchain_code
+			};
 
 		Ok(code)
 	}
@@ -161,7 +158,7 @@ where
 			sp_blockchain::Error::UnknownBlock(format!("Could not find block hash for {:?}", at))
 		})?;
 
-		let return_data = StateMachine::new(
+		let mut sm = StateMachine::new(
 			&state,
 			&mut changes,
 			&self.executor,
@@ -171,22 +168,17 @@ where
 			&runtime_code,
 			self.spawn_handle.clone(),
 		)
-		.set_parent_hash(at_hash)
-		.execute_using_consensus_failure_handler::<_, NeverNativeValue, fn() -> _>(
-			strategy.get_manager(),
-			None,
-		)?;
+		.set_parent_hash(at_hash);
 
-		Ok(return_data.into_encoded())
+		sm.execute_using_consensus_failure_handler(strategy.get_manager())
+			.map_err(Into::into)
 	}
 
 	fn contextual_call<
 		EM: Fn(
-			Result<NativeOrEncoded<R>, Self::Error>,
-			Result<NativeOrEncoded<R>, Self::Error>,
-		) -> Result<NativeOrEncoded<R>, Self::Error>,
-		R: Encode + Decode + PartialEq,
-		NC: FnOnce() -> result::Result<R, sp_api::ApiError> + UnwindSafe,
+			Result<Vec<u8>, Self::Error>,
+			Result<Vec<u8>, Self::Error>,
+		) -> Result<Vec<u8>, Self::Error>,
 	>(
 		&self,
 		at: &BlockId<Block>,
@@ -195,10 +187,9 @@ where
 		changes: &RefCell<OverlayedChanges>,
 		storage_transaction_cache: Option<&RefCell<StorageTransactionCache<Block, B::State>>>,
 		execution_manager: ExecutionManager<EM>,
-		native_call: Option<NC>,
 		recorder: &Option<ProofRecorder<Block>>,
 		extensions: Option<Extensions>,
-	) -> Result<NativeOrEncoded<R>, sp_blockchain::Error>
+	) -> Result<Vec<u8>, sp_blockchain::Error>
 	where
 		ExecutionManager<EM>: Clone,
 	{
@@ -223,15 +214,11 @@ where
 
 		match recorder {
 			Some(recorder) => {
-				let trie_state = state.as_trie_backend().ok_or_else(|| {
-					Box::new(sp_state_machine::ExecutionError::UnableToGenerateProof)
-						as Box<dyn sp_state_machine::Error>
-				})?;
+				let trie_state = state.as_trie_backend();
 
-				let backend = sp_state_machine::ProvingBackend::new_with_recorder(
-					trie_state,
-					recorder.clone(),
-				);
+				let backend = sp_state_machine::TrieBackendBuilder::wrap(&trie_state)
+					.with_recorder(recorder.clone())
+					.build();
 
 				let mut state_machine = StateMachine::new(
 					&backend,
@@ -243,12 +230,9 @@ where
 					&runtime_code,
 					self.spawn_handle.clone(),
 				)
+				.with_storage_transaction_cache(storage_transaction_cache.as_deref_mut())
 				.set_parent_hash(at_hash);
-				// TODO: https://github.com/paritytech/substrate/issues/4455
-				state_machine.execute_using_consensus_failure_handler(
-					execution_manager,
-					native_call.map(|n| || (n)().map_err(|e| Box::new(e) as Box<_>)),
-				)
+				state_machine.execute_using_consensus_failure_handler(execution_manager)
 			},
 			None => {
 				let mut state_machine = StateMachine::new(
@@ -261,14 +245,9 @@ where
 					&runtime_code,
 					self.spawn_handle.clone(),
 				)
-				.with_storage_transaction_cache(
-					storage_transaction_cache.as_mut().map(|c| &mut **c),
-				)
+				.with_storage_transaction_cache(storage_transaction_cache.as_deref_mut())
 				.set_parent_hash(at_hash);
-				state_machine.execute_using_consensus_failure_handler(
-					execution_manager,
-					native_call.map(|n| || (n)().map_err(|e| Box::new(e) as Box<_>)),
-				)
+				state_machine.execute_using_consensus_failure_handler(execution_manager)
 			},
 		}
 		.map_err(Into::into)
@@ -284,7 +263,7 @@ where
 			state_runtime_code.runtime_code().map_err(sp_blockchain::Error::RuntimeCode)?;
 		self.executor
 			.runtime_version(&mut ext, &runtime_code)
-			.map_err(|e| sp_blockchain::Error::VersionInvalid(format!("{:?}", e)).into())
+			.map_err(|e| sp_blockchain::Error::VersionInvalid(e.to_string()))
 	}
 
 	fn prove_execution(
@@ -295,10 +274,7 @@ where
 	) -> sp_blockchain::Result<(Vec<u8>, StorageProof)> {
 		let state = self.backend.state_at(*at)?;
 
-		let trie_backend = state.as_trie_backend().ok_or_else(|| {
-			Box::new(sp_state_machine::ExecutionError::UnableToGenerateProof)
-				as Box<dyn sp_state_machine::Error>
-		})?;
+		let trie_backend = state.as_trie_backend();
 
 		let state_runtime_code = sp_state_machine::backend::BackendRuntimeCode::new(trie_backend);
 		let runtime_code =
@@ -306,7 +282,7 @@ where
 		let runtime_code = self.check_override(runtime_code, at)?;
 
 		sp_state_machine::prove_execution_on_trie_backend(
-			&trie_backend,
+			trie_backend,
 			&mut Default::default(),
 			&self.executor,
 			self.spawn_handle.clone(),
@@ -318,6 +294,20 @@ where
 	}
 }
 
+impl<B, E, Block> RuntimeVersionOf for LocalCallExecutor<Block, B, E>
+where
+	E: RuntimeVersionOf,
+	Block: BlockT,
+{
+	fn runtime_version(
+		&self,
+		ext: &mut dyn sp_externalities::Externalities,
+		runtime_code: &sp_core::traits::RuntimeCode,
+	) -> Result<sp_version::RuntimeVersion, sc_executor::error::Error> {
+		RuntimeVersionOf::runtime_version(&self.executor, ext, runtime_code)
+	}
+}
+
 impl<Block, B, E> sp_version::GetRuntimeVersionAt<Block> for LocalCallExecutor<Block, B, E>
 where
 	B: backend::Backend<Block>,
@@ -325,7 +315,7 @@ where
 	Block: BlockT,
 {
 	fn runtime_version(&self, at: &BlockId<Block>) -> Result<sp_version::RuntimeVersion, String> {
-		CallExecutor::runtime_version(self, at).map_err(|e| format!("{:?}", e))
+		CallExecutor::runtime_version(self, at).map_err(|e| e.to_string())
 	}
 }
 
@@ -357,6 +347,7 @@ mod tests {
 			WasmExecutionMethod::Interpreted,
 			Some(128),
 			1,
+			2,
 		);
 
 		let overrides = crate::client::wasm_override::dummy_overrides();
@@ -395,7 +386,7 @@ mod tests {
 		let call_executor = LocalCallExecutor {
 			backend: backend.clone(),
 			executor: executor.clone(),
-			wasm_override: Some(overrides),
+			wasm_override: Arc::new(Some(overrides)),
 			spawn_handle: Box::new(TaskExecutor::new()),
 			client_config,
 			wasm_substitutes: WasmSubstitutes::new(

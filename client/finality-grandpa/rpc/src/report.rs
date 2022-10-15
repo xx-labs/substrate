@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2020-2021 Parity Technologies (UK) Ltd.
+// Copyright (C) 2020-2022 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -88,10 +88,10 @@ impl RoundState {
 		voters: &HashSet<AuthorityId>,
 	) -> Result<Self, Error> {
 		let prevotes = &round_state.prevote_ids;
-		let missing_prevotes = voters.difference(&prevotes).cloned().collect();
+		let missing_prevotes = voters.difference(prevotes).cloned().collect();
 
 		let precommits = &round_state.precommit_ids;
-		let missing_precommits = voters.difference(&precommits).cloned().collect();
+		let missing_precommits = voters.difference(precommits).cloned().collect();
 
 		Ok(Self {
 			round: round.try_into()?,

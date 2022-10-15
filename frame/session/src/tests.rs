@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2017-2021 Parity Technologies (UK) Ltd.
+// Copyright (C) 2017-2022 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -21,18 +21,21 @@ use super::*;
 use crate::mock::{
 	authorities, before_session_end_called, force_new_session, new_test_ext,
 	reset_before_session_end_called, session_changed, set_next_validators, set_session_length,
-	Origin, PreUpgradeMockSessionKeys, Session, System, Test, TestValidatorIdOf, SESSION_CHANGED,
-	TEST_SESSION_CHANGED,
+	PreUpgradeMockSessionKeys, RuntimeOrigin, Session, SessionChanged, System, Test,
+	TestSessionChanged, TestValidatorIdOf,
 };
 
 use codec::Decode;
 use sp_core::crypto::key_types::DUMMY;
 use sp_runtime::testing::UintAuthorityId;
 
-use frame_support::{assert_noop, assert_ok, traits::OnInitialize};
+use frame_support::{
+	assert_noop, assert_ok,
+	traits::{ConstU64, OnInitialize},
+};
 
 fn initialize_block(block: u64) {
-	SESSION_CHANGED.with(|l| *l.borrow_mut() = false);
+	SessionChanged::mutate(|l| *l = false);
 	System::set_block_number(block);
 	Session::on_initialize(block);
 }
@@ -64,7 +67,7 @@ fn keys_cleared_on_kill() {
 		assert_eq!(Session::key_owner(id, UintAuthorityId(1).get_raw(id)), Some(1));
 
 		assert!(System::is_provider_required(&1));
-		assert_ok!(Session::purge_keys(Origin::signed(1)));
+		assert_ok!(Session::purge_keys(RuntimeOrigin::signed(1)));
 		assert!(!System::is_provider_required(&1));
 
 		assert_eq!(Session::load_keys(&1), None);
@@ -84,8 +87,8 @@ fn purge_keys_works_for_stash_id() {
 		let id = DUMMY;
 		assert_eq!(Session::key_owner(id, UintAuthorityId(1).get_raw(id)), Some(1));
 
-		assert_ok!(Session::purge_keys(Origin::signed(10)));
-		assert_ok!(Session::purge_keys(Origin::signed(2)));
+		assert_ok!(Session::purge_keys(RuntimeOrigin::signed(10)));
+		assert_ok!(Session::purge_keys(RuntimeOrigin::signed(2)));
 
 		assert_eq!(Session::load_keys(&10), None);
 		assert_eq!(Session::load_keys(&20), None);
@@ -125,7 +128,7 @@ fn authorities_should_track_validators() {
 		reset_before_session_end_called();
 
 		set_next_validators(vec![1, 2, 4]);
-		assert_ok!(Session::set_keys(Origin::signed(4), UintAuthorityId(4).into(), vec![]));
+		assert_ok!(Session::set_keys(RuntimeOrigin::signed(4), UintAuthorityId(4).into(), vec![]));
 		force_new_session();
 		initialize_block(3);
 		assert_eq!(
@@ -191,7 +194,7 @@ fn session_change_should_work() {
 
 		// Block 3: Set new key for validator 2; no visible change.
 		initialize_block(3);
-		assert_ok!(Session::set_keys(Origin::signed(2), UintAuthorityId(5).into(), vec![]));
+		assert_ok!(Session::set_keys(RuntimeOrigin::signed(2), UintAuthorityId(5).into(), vec![]));
 		assert_eq!(authorities(), vec![UintAuthorityId(1), UintAuthorityId(2), UintAuthorityId(3)]);
 
 		// Block 4: Session rollover; no visible change.
@@ -216,13 +219,13 @@ fn duplicates_are_not_allowed() {
 		System::set_block_number(1);
 		Session::on_initialize(1);
 		assert_noop!(
-			Session::set_keys(Origin::signed(4), UintAuthorityId(1).into(), vec![]),
+			Session::set_keys(RuntimeOrigin::signed(4), UintAuthorityId(1).into(), vec![]),
 			Error::<Test>::DuplicatedKey,
 		);
-		assert_ok!(Session::set_keys(Origin::signed(1), UintAuthorityId(10).into(), vec![]));
+		assert_ok!(Session::set_keys(RuntimeOrigin::signed(1), UintAuthorityId(10).into(), vec![]));
 
 		// is fine now that 1 has migrated off.
-		assert_ok!(Session::set_keys(Origin::signed(4), UintAuthorityId(1).into(), vec![]));
+		assert_ok!(Session::set_keys(RuntimeOrigin::signed(4), UintAuthorityId(1).into(), vec![]));
 	});
 }
 
@@ -232,7 +235,7 @@ fn session_changed_flag_works() {
 
 	new_test_ext().execute_with(|| {
 		TestValidatorIdOf::set(vec![(1, 1), (2, 2), (3, 3), (69, 69)].into_iter().collect());
-		TEST_SESSION_CHANGED.with(|l| *l.borrow_mut() = true);
+		TestSessionChanged::mutate(|l| *l = true);
 
 		force_new_session();
 		initialize_block(1);
@@ -265,7 +268,7 @@ fn session_changed_flag_works() {
 		assert!(before_session_end_called());
 		reset_before_session_end_called();
 
-		assert_ok!(Session::set_keys(Origin::signed(2), UintAuthorityId(5).into(), vec![]));
+		assert_ok!(Session::set_keys(RuntimeOrigin::signed(2), UintAuthorityId(5).into(), vec![]));
 		force_new_session();
 		initialize_block(6);
 		assert!(!session_changed());
@@ -273,7 +276,11 @@ fn session_changed_flag_works() {
 		reset_before_session_end_called();
 
 		// changing the keys of a validator leads to change.
-		assert_ok!(Session::set_keys(Origin::signed(69), UintAuthorityId(69).into(), vec![]));
+		assert_ok!(Session::set_keys(
+			RuntimeOrigin::signed(69),
+			UintAuthorityId(69).into(),
+			vec![]
+		));
 		force_new_session();
 		initialize_block(7);
 		assert!(session_changed());
@@ -291,12 +298,7 @@ fn session_changed_flag_works() {
 
 #[test]
 fn periodic_session_works() {
-	frame_support::parameter_types! {
-		const Period: u64 = 10;
-		const Offset: u64 = 3;
-	}
-
-	type P = PeriodicSessions<Period, Offset>;
+	type P = PeriodicSessions<ConstU64<10>, ConstU64<3>>;
 
 	// make sure that offset phase behaves correctly
 	for i in 0u64..3 {
@@ -357,7 +359,7 @@ fn session_keys_generate_output_works_as_set_keys_input() {
 	new_test_ext().execute_with(|| {
 		let new_keys = mock::MockSessionKeys::generate(None);
 		assert_ok!(Session::set_keys(
-			Origin::signed(2),
+			RuntimeOrigin::signed(2),
 			<mock::Test as Config>::Keys::decode(&mut &new_keys[..]).expect("Decode keys"),
 			vec![],
 		));
@@ -386,8 +388,8 @@ fn upgrade_keys() {
 	use sp_core::crypto::key_types::DUMMY;
 
 	// This test assumes certain mocks.
-	assert_eq!(mock::NEXT_VALIDATORS.with(|l| l.borrow().clone()), vec![1, 2, 3]);
-	assert_eq!(mock::VALIDATORS.with(|l| l.borrow().clone()), vec![1, 2, 3]);
+	assert_eq!(mock::NextValidators::get().clone(), vec![1, 2, 3]);
+	assert_eq!(mock::Validators::get().clone(), vec![1, 2, 3]);
 
 	new_test_ext().execute_with(|| {
 		let pre_one = PreUpgradeMockSessionKeys { a: [1u8; 32], b: [1u8; 64] };
@@ -452,4 +454,31 @@ fn upgrade_keys() {
 			assert_eq!(<super::NextKeys<Test>>::get(&i), Some(mock_keys_for(i)));
 		}
 	})
+}
+
+#[cfg(feature = "historical")]
+#[test]
+fn test_migration_v1() {
+	use crate::{
+		historical::{HistoricalSessions, StoredRange},
+		mock::Historical,
+	};
+	use frame_support::traits::{PalletInfoAccess, StorageVersion};
+
+	new_test_ext().execute_with(|| {
+		assert!(<HistoricalSessions<Test>>::iter_values().count() > 0);
+		assert!(<StoredRange<Test>>::exists());
+
+		let old_pallet = "Session";
+		let new_pallet = <Historical as PalletInfoAccess>::name();
+		frame_support::storage::migration::move_pallet(
+			new_pallet.as_bytes(),
+			old_pallet.as_bytes(),
+		);
+		StorageVersion::new(0).put::<Historical>();
+
+		crate::migrations::v1::pre_migrate::<Test, Historical>();
+		crate::migrations::v1::migrate::<Test, Historical>();
+		crate::migrations::v1::post_migrate::<Test, Historical>();
+	});
 }
