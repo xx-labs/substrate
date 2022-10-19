@@ -20,7 +20,7 @@ use futures::executor::block_on;
 use parity_scale_codec::{Decode, Encode, Joiner};
 use sc_block_builder::BlockBuilderProvider;
 use sc_client_api::{
-	in_mem, BlockBackend, BlockchainEvents, FinalityNotifications, StorageProvider,
+	in_mem, BlockBackend, BlockchainEvents, FinalityNotifications, HeaderBackend, StorageProvider,
 };
 use sc_client_db::{Backend, BlocksPruning, DatabaseSettings, DatabaseSource, PruningMode};
 use sc_consensus::{
@@ -338,11 +338,15 @@ fn block_builder_works_with_transactions() {
 	let block = builder.build().unwrap().block;
 	block_on(client.import(BlockOrigin::Own, block)).unwrap();
 
+	let hash0 = client
+		.expect_block_hash_from_id(&BlockId::Number(0))
+		.expect("block 0 was just imported. qed");
+	let hash1 = client
+		.expect_block_hash_from_id(&BlockId::Number(1))
+		.expect("block 1 was just imported. qed");
+
 	assert_eq!(client.chain_info().best_number, 1);
-	assert_ne!(
-		client.state_at(&BlockId::Number(1)).unwrap().pairs(),
-		client.state_at(&BlockId::Number(0)).unwrap().pairs()
-	);
+	assert_ne!(client.state_at(&hash1).unwrap().pairs(), client.state_at(&hash0).unwrap().pairs());
 	assert_eq!(
 		client
 			.runtime_api()
@@ -392,11 +396,15 @@ fn block_builder_does_not_include_invalid() {
 	let block = builder.build().unwrap().block;
 	block_on(client.import(BlockOrigin::Own, block)).unwrap();
 
+	let hash0 = client
+		.expect_block_hash_from_id(&BlockId::Number(0))
+		.expect("block 0 was just imported. qed");
+	let hash1 = client
+		.expect_block_hash_from_id(&BlockId::Number(1))
+		.expect("block 1 was just imported. qed");
+
 	assert_eq!(client.chain_info().best_number, 1);
-	assert_ne!(
-		client.state_at(&BlockId::Number(1)).unwrap().pairs(),
-		client.state_at(&BlockId::Number(0)).unwrap().pairs()
-	);
+	assert_ne!(client.state_at(&hash1).unwrap().pairs(), client.state_at(&hash0).unwrap().pairs());
 	assert_eq!(client.body(&BlockId::Number(1)).unwrap().unwrap().len(), 1)
 }
 
@@ -1594,12 +1602,14 @@ fn storage_keys_iter_prefix_and_start_key_works() {
 		.add_extra_child_storage(&child_info, b"third".to_vec(), vec![0u8; 32])
 		.build();
 
+	let block_hash = client.info().best_hash;
+
 	let child_root = b":child_storage:default:child".to_vec();
 	let prefix = StorageKey(array_bytes::hex2bytes_unchecked("3a"));
 	let child_prefix = StorageKey(b"sec".to_vec());
 
 	let res: Vec<_> = client
-		.storage_keys_iter(&BlockId::Number(0), Some(&prefix), None)
+		.storage_keys_iter(&block_hash, Some(&prefix), None)
 		.unwrap()
 		.map(|x| x.0)
 		.collect();
@@ -1614,7 +1624,7 @@ fn storage_keys_iter_prefix_and_start_key_works() {
 
 	let res: Vec<_> = client
 		.storage_keys_iter(
-			&BlockId::Number(0),
+			&block_hash,
 			Some(&prefix),
 			Some(&StorageKey(array_bytes::hex2bytes_unchecked("3a636f6465"))),
 		)
@@ -1625,7 +1635,7 @@ fn storage_keys_iter_prefix_and_start_key_works() {
 
 	let res: Vec<_> = client
 		.storage_keys_iter(
-			&BlockId::Number(0),
+			&block_hash,
 			Some(&prefix),
 			Some(&StorageKey(array_bytes::hex2bytes_unchecked("3a686561707061676573"))),
 		)
@@ -1635,7 +1645,7 @@ fn storage_keys_iter_prefix_and_start_key_works() {
 	assert_eq!(res, Vec::<Vec<u8>>::new());
 
 	let res: Vec<_> = client
-		.child_storage_keys_iter(&BlockId::Number(0), child_info.clone(), Some(&child_prefix), None)
+		.child_storage_keys_iter(&block_hash, child_info.clone(), Some(&child_prefix), None)
 		.unwrap()
 		.map(|x| x.0)
 		.collect();
@@ -1643,7 +1653,7 @@ fn storage_keys_iter_prefix_and_start_key_works() {
 
 	let res: Vec<_> = client
 		.child_storage_keys_iter(
-			&BlockId::Number(0),
+			&block_hash,
 			child_info,
 			None,
 			Some(&StorageKey(b"second".to_vec())),
@@ -1658,10 +1668,12 @@ fn storage_keys_iter_prefix_and_start_key_works() {
 fn storage_keys_iter_works() {
 	let client = substrate_test_runtime_client::new();
 
+	let block_hash = client.info().best_hash;
+
 	let prefix = StorageKey(array_bytes::hex2bytes_unchecked(""));
 
 	let res: Vec<_> = client
-		.storage_keys_iter(&BlockId::Number(0), Some(&prefix), None)
+		.storage_keys_iter(&block_hash, Some(&prefix), None)
 		.unwrap()
 		.take(9)
 		.map(|x| array_bytes::bytes2hex("", &x.0))
@@ -1683,7 +1695,7 @@ fn storage_keys_iter_works() {
 
 	let res: Vec<_> = client
 		.storage_keys_iter(
-			&BlockId::Number(0),
+			&block_hash,
 			Some(&prefix),
 			Some(&StorageKey(array_bytes::hex2bytes_unchecked("3a636f6465"))),
 		)
@@ -1706,7 +1718,7 @@ fn storage_keys_iter_works() {
 
 	let res: Vec<_> = client
 		.storage_keys_iter(
-			&BlockId::Number(0),
+			&block_hash,
 			Some(&prefix),
 			Some(&StorageKey(array_bytes::hex2bytes_unchecked(
 				"7d5007603a7f5dd729d51d93cf695d6465789443bb967c0d1fe270e388c96eaa",
