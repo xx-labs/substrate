@@ -54,3 +54,6 @@ tempfile = "3.1.0"
 default = ["rocksdb", "wasmtime"]
 rocksdb = ["sc-client-db/rocksdb"]
 wasmtime = ["sc-service/wasmtime"]
+quantum-secure = [
+	"sp-runtime/quantum-secure",
+]

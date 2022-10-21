@@ -183,8 +183,11 @@ pub enum CryptoScheme {
 	Ed25519,
 	/// Use sr25519.
 	Sr25519,
-	/// Use
+	/// Use ecdsa.
 	Ecdsa,
+	/// Use WOTS+.
+	#[cfg(feature = "quantum-secure")]
+	Wots,
 }
 
 /// The type of the output format.

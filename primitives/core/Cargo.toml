@@ -141,5 +141,8 @@ full_crypto = [
 	"sp-core-hashing",
 	"sp-runtime-interface/disable_target_static_assertions",
 	"merlin",
-	"w_ots",
+]
+
+quantum-secure = [
+	"w_ots"
 ]

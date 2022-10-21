@@ -171,6 +171,7 @@ quantum-secure = [
 	"sp-runtime/quantum-secure",
 	"frame-system/quantum-secure",
 	"kitchensink-runtime/quantum-secure",
+	"sc-cli/quantum-secure",
 ]
 
 [[bench]]

@@ -291,6 +291,7 @@ pub fn read_message(msg: Option<&String>, should_decode: bool) -> Result<Vec<u8>
 }
 
 /// Allows for calling $method with appropriate crypto impl.
+#[cfg(not(feature = "quantum-secure"))]
 #[macro_export]
 macro_rules! with_crypto_scheme {
 	(
@@ -312,6 +313,37 @@ macro_rules! with_crypto_scheme {
 			}
 			$crate::CryptoScheme::Ed25519 => {
 				$method::<sp_core::ed25519::Pair, $($generics),*>($($params),*)
+			}
+		}
+	};
+}
+
+/// Allows for calling $method with appropriate crypto impl.
+#[cfg(feature = "quantum-secure")]
+#[macro_export]
+macro_rules! with_crypto_scheme {
+	(
+		$scheme:expr,
+		$method:ident ( $($params:expr),* $(,)?) $(,)?
+	) => {
+		$crate::with_crypto_scheme!($scheme, $method<>($($params),*))
+	};
+	(
+		$scheme:expr,
+		$method:ident<$($generics:ty),*>( $( $params:expr ),* $(,)?) $(,)?
+	) => {
+		match $scheme {
+			$crate::CryptoScheme::Ecdsa => {
+				$method::<sp_core::ecdsa::Pair, $($generics),*>($($params),*)
+			}
+			$crate::CryptoScheme::Sr25519 => {
+				$method::<sp_core::sr25519::Pair, $($generics),*>($($params),*)
+			}
+			$crate::CryptoScheme::Ed25519 => {
+				$method::<sp_core::ed25519::Pair, $($generics),*>($($params),*)
+			}
+			$crate::CryptoScheme::Wots => {
+				$method::<sp_core::wots::Pair, $($generics),*>($($params),*)
 			}
 		}
 	};

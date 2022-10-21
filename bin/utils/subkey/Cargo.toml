@@ -19,3 +19,8 @@ name = "subkey"
 [dependencies]
 clap = { version = "4.0.9", features = ["derive"] }
 sc-cli = { version = "0.10.0-dev", path = "../../../client/cli" }
+
+[features]
+quantum-secure = [
+	"sc-cli/quantum-secure",
+]

@@ -94,6 +94,7 @@ impl IdentifyAccount for sp_core::ecdsa::Public {
 	}
 }
 
+#[cfg(feature = "quantum-secure")]
 impl IdentifyAccount for sp_core::wots::Public {
     type AccountId = Self;
     fn into_account(self) -> Self {
@@ -144,6 +145,7 @@ impl Verify for sp_core::ecdsa::Signature {
 	}
 }
 
+#[cfg(feature = "quantum-secure")]
 impl Verify for sp_core::wots::Signature {
     type Signer = sp_core::wots::Public;
 

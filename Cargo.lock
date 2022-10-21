@@ -9689,7 +9689,6 @@ dependencies = [
  "sp-wasm-interface",
  "tracing",
  "tracing-core",
- "w_ots",
 ]
 
 [[package]]

@@ -60,4 +60,7 @@ std = [
 	"sp-weights/std",
 ]
 
-quantum-secure = []
+quantum-secure = [
+	"sp-core/quantum-secure",
+	"sp-io/quantum-secure",
+]

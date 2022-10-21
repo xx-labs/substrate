@@ -20,3 +20,8 @@ sp-runtime = { version = "6.0.0", path = "../../../primitives/runtime" }
 
 [features]
 default = []
+quantum-secure = [
+	"frame-system/quantum-secure",
+	"sp-runtime/quantum-secure",
+	"sc-cli/quantum-secure",
+]

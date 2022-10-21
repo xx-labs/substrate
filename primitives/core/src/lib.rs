@@ -67,6 +67,8 @@ pub mod testing;
 #[cfg(feature = "std")]
 pub mod traits;
 pub mod uint;
+
+#[cfg(feature = "quantum-secure")]
 pub mod wots;
 
 pub use self::{
