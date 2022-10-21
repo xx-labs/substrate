@@ -28,7 +28,14 @@ use crate::{
 use sp_runtime_interface::pass_by::PassByInner;
 use sp_std::vec::Vec;
 #[cfg(feature = "full_crypto")]
-use w_ots::{hasher::{Blake2bHasher, Sha3_256Hasher}, keys::Key, security::{consensus_params, verify as wots_verify}};
+use w_ots::{
+    hasher::{Blake2bHasher, Sha3_224Hasher},
+    keys::Key,
+    security::{
+        level_0_params,
+        verify as wots_verify
+    }
+};
 
 /// An identifier used to match public keys against wots+ keys
 pub const CRYPTO_ID: CryptoTypeId = CryptoTypeId(*b"wots");
@@ -83,9 +90,9 @@ impl From<[u8; 64]> for Seed {
 )]
 pub struct Public(pub [u8; 32]);
 
-/// A W-OTS+ key pair (with generic Hash functions)
+/// A W-OTS+ key pair (with default security level 0)
 #[cfg(feature = "full_crypto")]
-pub struct Pair(pub Key<Blake2bHasher, Sha3_256Hasher>);
+pub struct Pair(pub Key<Blake2bHasher, Sha3_224Hasher>);
 
 #[cfg(feature = "full_crypto")]
 impl Clone for Pair {
@@ -361,6 +368,13 @@ impl From<&Public> for CryptoTypePublicPair {
     }
 }
 
+/// Verify a WOTS signature
+/// NOTE: independent from Pair, since the signature contains the encoding of params
+#[cfg(feature = "full_crypto")]
+pub fn verify(sig: &Signature, msg: &[u8], pub_key: &Public) -> bool {
+    wots_verify(msg.as_ref(), &sig.0[..], pub_key).is_ok()
+}
+
 /// Derive a single hard junction.
 #[allow(unused)]
 #[cfg(feature = "full_crypto")]
@@ -451,7 +465,7 @@ impl TraitPair for Pair {
         pk_seed.copy_from_slice(&seed.0[32..]);
 
         Ok(Pair(
-           Key::from_seed(consensus_params(), sk_seed, pk_seed)
+           Key::from_seed(level_0_params(), sk_seed, pk_seed)
                 .map_err(|_| SecretStringError::InvalidFormat)?,
         ))
     }
@@ -490,7 +504,7 @@ impl TraitPair for Pair {
 
     /// Verify a signature on a message. Returns true if the signature is good.
     fn verify<M: AsRef<[u8]>>(sig: &Self::Signature, message: M, pubkey: &Self::Public) -> bool {
-        Self::verify_weak(&sig.0[..], message.as_ref(), pubkey)
+        verify(sig, message.as_ref(), pubkey)
     }
 
     /// Verify a signature on a message. Returns true if the signature is good.

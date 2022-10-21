@@ -11092,9 +11092,9 @@ version = "1.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "97fee6b57c6a41524a810daee9286c02d7752c4253064d0b05472833a438f675"
 dependencies = [
- "cfg-if 1.0.0",
+ "cfg-if 0.1.10",
  "digest 0.10.3",
- "rand 0.8.5",
+ "rand 0.7.3",
  "static_assertions",
 ]
 
@@ -11250,7 +11250,7 @@ checksum = "6a02e4885ed3bc0f2de90ea6dd45ebcbb66dacffe03547fadbb0eeae2770887d"
 [[package]]
 name = "w_ots"
 version = "0.1.0"
-source = "git+https://github.com/ChainSafe/W-OTS.git#b4e7f08f0ff3e08daa286318f8ac627cc1f934cf"
+source = "git+https://github.com/ChainSafe/W-OTS.git#9cbfad095d5c14d79818f68465b4eae81476b5de"
 dependencies = [
  "blake2",
  "hex",

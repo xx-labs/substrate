@@ -1460,7 +1460,7 @@ pub trait Crypto {
 	///
 	/// Returns `true` when the verification was successful.
 	fn wots_verify(sig: &wots::Signature, msg: &[u8], pub_key: &wots::Public) -> bool {
-		wots::Pair::verify(sig, msg, pub_key)
+		wots::verify(sig, msg, pub_key)
     }
 
 	/// Verify `w-ots+` signature.
@@ -1468,7 +1468,7 @@ pub trait Crypto {
 	/// Returns `true` when the verification was successful.
 	#[version(2)]
 	fn wots_verify(sig: &wots::Signature, msg: &[u8], pub_key: &wots::Public) -> bool {
-        wots::Pair::verify(sig, msg, pub_key)
+        wots::verify(sig, msg, pub_key)
     }
 }
 
