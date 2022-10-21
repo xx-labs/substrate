@@ -92,14 +92,8 @@ pub struct Public(pub [u8; 32]);
 
 /// A W-OTS+ key pair (with default security level 0)
 #[cfg(feature = "full_crypto")]
+#[derive(Clone)]
 pub struct Pair(pub Key<Blake2bHasher, Sha3_224Hasher>);
-
-#[cfg(feature = "full_crypto")]
-impl Clone for Pair {
-    fn clone(&self) -> Self {
-        Pair(self.0.clone())
-    }
-}
 
 impl AsRef<[u8; 32]> for Public {
     fn as_ref(&self) -> &[u8; 32] {
@@ -375,29 +369,11 @@ pub fn verify(sig: &Signature, msg: &[u8], pub_key: &Public) -> bool {
     wots_verify(msg.as_ref(), &sig.0[..], pub_key).is_ok()
 }
 
-/// Derive a single hard junction.
-#[allow(unused)]
-#[cfg(feature = "full_crypto")]
-pub fn derive_hard_junction(seed: &Seed, cc: &[u8; 32]) -> Seed {
-    let sk_seed_bytes =
-        ("WOTSHDKDSK", &seed.0[..32], cc).using_encoded(crate::hashing::blake2_256);
-    let pk_seed_bytes =
-        ("WOTSHDKDPK", &seed.0[32..], cc).using_encoded(crate::hashing::blake2_256);
-    let seed_bytes = [sk_seed_bytes, pk_seed_bytes].concat();
-
-    let mut seed = [0; 64];
-    seed.copy_from_slice(&seed_bytes);
-
-    Seed(seed)
-}
-
 /// An error when deriving a key.
 #[cfg(feature = "full_crypto")]
 pub enum DeriveError {
-    /// A soft key was found in the path (and is unsupported).
-    SoftKeyInPath,
-    /// Invalid Seed,
-    InvalidSeed,
+    /// Substrate style derivation not supported for WOTS+ keys
+    DerivationNotSupported,
 }
 
 #[cfg(feature = "full_crypto")]
@@ -471,22 +447,17 @@ impl TraitPair for Pair {
     }
 
     /// Derive a child key from a series of given junctions.
+    /// Not supported for WOTS+.
     fn derive<Iter: Iterator<Item = DeriveJunction>>(
         &self,
         path: Iter,
-        _seed: Option<Seed>,
+        seed: Option<Seed>,
     ) -> Result<(Pair, Option<Seed>), DeriveError> {
-        let mut acc = Seed::default();
-        acc.0[..32].copy_from_slice(&self.0.seed);
-        acc.0[32..].copy_from_slice(&self.0.p_seed);
-
-        for j in path {
-            match j {
-                DeriveJunction::Soft(_) => return Err(DeriveError::SoftKeyInPath),
-                DeriveJunction::Hard(cc) => acc = derive_hard_junction(&acc, &cc),
-            }
+        // Return same key if no derivations (needed for uri with password)
+        if path.peekable().peek().is_none() {
+            return Ok((self.clone(), seed))
         }
-        Ok((Self::from_seed(&acc), Some(acc)))
+        return Err(DeriveError::DerivationNotSupported)
     }
 
     /// Get the public key.
