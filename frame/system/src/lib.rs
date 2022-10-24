@@ -666,6 +666,11 @@ pub mod pallet {
 	#[pallet::storage]
 	pub(super) type UpgradedToTripleRefCount<T: Config> = StorageValue<_, bool, ValueQuery>;
 
+	#[cfg(feature = "quantum-secure")]
+	/// True if we have upgraded to support quantum secure Accounts. False (default) if not.
+	#[pallet::storage]
+	pub(super) type UpgradedToQuantumSecure<T: Config> = StorageValue<_, bool, ValueQuery>;
+
 	/// The execution phase of the block.
 	#[pallet::storage]
 	#[pallet::whitelist_storage]
@@ -686,6 +691,8 @@ pub mod pallet {
 			<LastRuntimeUpgrade<T>>::put(LastRuntimeUpgradeInfo::from(T::Version::get()));
 			<UpgradedToU32RefCount<T>>::put(true);
 			<UpgradedToTripleRefCount<T>>::put(true);
+			#[cfg(feature = "quantum-secure")]
+			<UpgradedToQuantumSecure<T>>::put(true);
 
 			sp_io::storage::set(well_known_keys::CODE, &self.code);
 			sp_io::storage::set(well_known_keys::EXTRINSIC_INDEX, &0u32.encode());

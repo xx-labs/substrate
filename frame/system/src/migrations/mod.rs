@@ -119,3 +119,51 @@ pub fn migrate_from_dual_to_triple_ref_count<V: V2ToV3, T: Config>() -> Weight {
 	<UpgradedToTripleRefCount<T>>::put(true);
 	Weight::MAX
 }
+
+/// Migration to support quantum secure Accounts.
+#[cfg(feature = "quantum-secure")]
+pub struct MigrateToQuantumSecure<T>(sp_std::marker::PhantomData<T>);
+
+#[cfg(feature = "quantum-secure")]
+impl<T: Config> frame_support::traits::OnRuntimeUpgrade for MigrateToQuantumSecure<T> {
+	#[cfg(feature = "try-runtime")]
+	fn pre_upgrade() -> Result<Vec<u8>, &'static str> {
+		frame_support::ensure!(
+			<crate::UpgradedToQuantumSecure<T>>::get() == false,
+			"Expected UpgradedToQuantumSecure to be false"
+		);
+		Ok(Default::default())
+	}
+
+	fn on_runtime_upgrade() -> Weight {
+		let mut translated: usize = 0;
+		<crate::Account<T>>::translate::<(T::Index, RefCount, RefCount, T::AccountData), _>(
+			|key, (nonce, consumers, providers, data)| {
+				translated += 1;
+				Some(crate::AccountInfo { nonce, consumers, providers, sufficients: 0, data, curr_pk: key })
+			},
+		);
+		log::info!(
+			target: "runtime::system",
+			"Applied migration to support quantum secure accounts to {:?} elements.",
+			translated
+		);
+		<crate::UpgradedToQuantumSecure<T>>::put(true);
+		Weight::MAX
+	}
+
+	#[cfg(feature = "try-runtime")]
+	fn post_upgrade(_state: Vec<u8>) -> Result<(), &'static str> {
+		// Confirm flag is set to true
+		frame_support::ensure!(
+			<crate::UpgradedToQuantumSecure<T>>::get() == true,
+			"Expected UpgradedToQuantumSecure to be true"
+		);
+		// Confirm all accounts have a curr_pk equal to their account id
+		frame_support::ensure!(
+			<crate::Account<T>>::iter().all(|(key, info)| key.eq(&info.curr_pk)),
+			"Current public key doesn't match account id on all accounts"
+		);
+		Ok(())
+	}
+}
