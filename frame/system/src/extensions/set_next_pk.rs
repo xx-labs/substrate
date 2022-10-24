@@ -27,19 +27,19 @@ use sp_runtime::{
 /// Set the next public key
 #[derive(Encode, Decode, Clone, Eq, PartialEq, TypeInfo)]
 #[scale_info(skip_type_params(T))]
-pub struct SetNextPk<T: Config>(pub T::AccountId);
+pub struct SetNextPk<T: Config>(pub Option<T::AccountId>);
 
 impl<T: Config> SetNextPk<T> {
 	/// utility constructor. Used only in client/factory code.
 	pub fn from(next_pk: T::AccountId) -> Self {
-		Self(next_pk)
+		Self(Some(next_pk))
 	}
 }
 
 impl<T: Config> sp_std::fmt::Debug for SetNextPk<T> {
 	#[cfg(feature = "std")]
 	fn fmt(&self, f: &mut sp_std::fmt::Formatter) -> sp_std::fmt::Result {
-		write!(f, "SetNextPk({})", self.0)
+		write!(f, "SetNextPk({:?})", self.0)
 	}
 
 	#[cfg(not(feature = "std"))]
@@ -70,7 +70,10 @@ impl<T: Config> SignedExtension for SetNextPk<T>
 		_len: usize,
 	) -> Result<(), TransactionValidityError> {
 		let mut account = crate::Account::<T>::get(who);
-		account.curr_pk = self.0;
+		// Set next public key if specified
+		if let Some(next_pk) = self.0 {
+			account.curr_pk = next_pk;
+		}
 		crate::Account::<T>::insert(who, account);
 		Ok(())
 	}
