@@ -49,7 +49,6 @@ use crate::{
 };
 
 use super::{pallet::*, STAKING_ID};
-use frame_system::ensure_root;
 
 /// The maximum number of iterations that we do whilst iterating over `T::VoterList` in
 /// `get_npos_voters`.
@@ -331,7 +330,7 @@ impl<T: Config> Pallet<T> {
 			if maybe_new_era_validators.is_some() &&
 				matches!(ForceEra::<T>::get(), Forcing::ForceNew)
 			{
-				ForceEra::<T>::put(Forcing::NotForcing);
+				Self::set_force_era(Forcing::NotForcing);
 			}
 
 			maybe_new_era_validators
@@ -583,7 +582,7 @@ impl<T: Config> Pallet<T> {
 		<ErasTotalStake<T>>::insert(&new_planned_era, total_stake);
 
 		// Collect the pref of all winners.
-		let min_comm = MinValidatorCommission::<T>::get();
+		let min_comm = MinCommission::<T>::get();
 		for stash in &elected_stashes {
 			let mut pref = Self::validators(stash);
 			// Ensure minimum commission in case a validator chills
@@ -765,11 +764,18 @@ impl<T: Config> Pallet<T> {
 		}
 	}
 
+	/// Helper to set a new `ForceEra` mode.
+	pub(crate) fn set_force_era(mode: Forcing) {
+		log!(info, "Setting force era mode {:?}.", mode);
+		ForceEra::<T>::put(mode);
+		Self::deposit_event(Event::<T>::ForceEra { mode });
+	}
+
 	/// Ensures that at the end of the current session there will be a new era.
 	pub(crate) fn ensure_new_era() {
 		match ForceEra::<T>::get() {
 			Forcing::ForceAlways | Forcing::ForceNew => (),
-			_ => ForceEra::<T>::put(Forcing::ForceNew),
+			_ => Self::set_force_era(Forcing::ForceNew),
 		}
 	}
 
@@ -1010,14 +1016,6 @@ impl<T: Config> Pallet<T> {
 			weight,
 			DispatchClass::Mandatory,
 		);
-	}
-
-	/// Check if origin is admin
-	pub fn ensure_admin(o: T::RuntimeOrigin) -> DispatchResult {
-		T::AdminOrigin::try_origin(o)
-			.map(|_| ())
-			.or_else(ensure_root)?;
-		Ok(())
 	}
 }
 
@@ -1624,7 +1622,7 @@ impl<T: Config> StakingInterface for Pallet<T> {
 	}
 
 	fn force_unstake(who: Self::AccountId) -> sp_runtime::DispatchResult {
-		let num_slashing_spans = Self::slashing_spans(&who).iter().count() as u32;
+		let num_slashing_spans = Self::slashing_spans(&who).map_or(0, |s| s.iter().count() as u32);
 		Self::force_unstake(RawOrigin::Root.into(), who.clone(), num_slashing_spans)
 	}
 
