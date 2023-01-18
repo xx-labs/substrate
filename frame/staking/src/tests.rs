@@ -57,7 +57,7 @@ fn set_staking_configs_works() {
 		assert_eq!(MaxNominatorsCount::<Test>::get(), Some(10));
 		assert_eq!(MaxValidatorsCount::<Test>::get(), Some(20));
 		assert_eq!(ChillThreshold::<Test>::get(), Some(Percent::from_percent(75)));
-		assert_eq!(MinValidatorCommission::<Test>::get(), Perbill::from_percent(0));
+		assert_eq!(MinCommission::<Test>::get(), Perbill::from_percent(0));
 
 		// noop does nothing
 		assert_storage_noop!(assert_ok!(Staking::set_staking_configs(
@@ -85,7 +85,7 @@ fn set_staking_configs_works() {
 		assert_eq!(MaxNominatorsCount::<Test>::get(), None);
 		assert_eq!(MaxValidatorsCount::<Test>::get(), None);
 		assert_eq!(ChillThreshold::<Test>::get(), None);
-		assert_eq!(MinValidatorCommission::<Test>::get(), Perbill::from_percent(0));
+		assert_eq!(MinCommission::<Test>::get(), Perbill::from_percent(0));
 	});
 }
 
@@ -156,7 +156,7 @@ fn basic_setup_works() {
 				unlocking: Default::default(),
 				claimed_rewards: bounded_vec![],
 				cmix_id: cmix_id(11u8)
-			})
+			}
 		);
 		// Account 20 controls the stash from account 21, which is 200 * balance_factor units
 		assert_eq!(
@@ -3598,8 +3598,15 @@ fn test_payout_stakers() {
 		// We track rewards in `claimed_rewards` vec
 		// Note that active staking compounds (rewards are added to total and active amounts)
 		assert_eq!(
-			Staking::ledger(&10).unwrap().claimed_rewards,
-			bounded_vec![1]
+			Staking::ledger(&10),
+			Some(StakingLedger {
+				stash: 11,
+				total: 1105,
+				active: 1105,
+				unlocking: Default::default(),
+				claimed_rewards: bounded_vec![1],
+				cmix_id: cmix_id(11u8),
+			})
 		);
 
 		for i in 3..16 {
@@ -3627,8 +3634,15 @@ fn test_payout_stakers() {
 
 		// We track rewards in `claimed_rewards` vec
 		assert_eq!(
-			Staking::ledger(&10).unwrap().claimed_rewards,
-			(1..=14).collect::<Vec<_>>().try_into().unwrap()
+			Staking::ledger(&10),
+			Some(StakingLedger {
+				stash: 11,
+				total: 2664,
+				active: 2664,
+				unlocking: Default::default(),
+				claimed_rewards: (1..=14).collect::<Vec<_>>().try_into().unwrap(),
+				cmix_id: cmix_id(11u8),
+			})
 		);
 
 		let last_era = 99;
@@ -3654,8 +3668,15 @@ fn test_payout_stakers() {
 			expected_last_reward_era
 		));
 		assert_eq!(
-			Staking::ledger(&10).unwrap().claimed_rewards,
-			bounded_vec![expected_start_reward_era, expected_last_reward_era]
+			Staking::ledger(&10),
+			Some(StakingLedger {
+				stash: 11,
+				total: 2930,
+				active: 2930,
+				unlocking: Default::default(),
+				claimed_rewards: bounded_vec![expected_start_reward_era, expected_last_reward_era],
+				cmix_id: cmix_id(11u8),
+			})
 		);
 
 		// Out of order claims works.
@@ -3663,14 +3684,21 @@ fn test_payout_stakers() {
 		assert_ok!(Staking::payout_stakers(RuntimeOrigin::signed(1337), 11, 23));
 		assert_ok!(Staking::payout_stakers(RuntimeOrigin::signed(1337), 11, 42));
 		assert_eq!(
-			Staking::ledger(&10).unwrap().claimed_rewards,
-			bounded_vec![
-				expected_start_reward_era,
-				23,
-				42,
-				69,
-				expected_last_reward_era
-			]
+			Staking::ledger(&10),
+			Some(StakingLedger {
+				stash: 11,
+				total: 3329,
+				active: 3329,
+				unlocking: Default::default(),
+				claimed_rewards: bounded_vec![
+					expected_start_reward_era,
+					23,
+					42,
+					69,
+					expected_last_reward_era
+				],
+				cmix_id: cmix_id(11u8),
+			})
 		);
 	});
 }
@@ -3892,7 +3920,11 @@ fn bond_during_era_correctly_populates_claimed_rewards() {
 				cmix_id: cmix_id(11u8)
 			})
 		);
-		mock::start_active_era(99);
+
+		// make sure only era upto history depth is stored
+		let current_era = 99;
+		let last_reward_era = 99 - HistoryDepth::get();
+		mock::start_active_era(current_era);
 		bond_validator(13, 12, 1000, cmix_id(13u8));
 		assert_eq!(
 			Staking::ledger(&12),
@@ -4257,9 +4289,9 @@ mod election_data_provider {
 	fn set_minimum_active_stake_is_correct() {
 		ExtBuilder::default()
 			.nominate(false)
-			.add_staker(61, 60, 2_000, StakerStatus::<AccountId>::Nominator(vec![21]))
-			.add_staker(71, 70, 10, StakerStatus::<AccountId>::Nominator(vec![21]))
-			.add_staker(81, 80, 50, StakerStatus::<AccountId>::Nominator(vec![21]))
+			.add_staker(61, 60, 2_000, StakerStatus::<CmixId, AccountId>::Nominator(vec![21]))
+			.add_staker(71, 70, 10, StakerStatus::<CmixId, AccountId>::Nominator(vec![21]))
+			.add_staker(81, 80, 50, StakerStatus::<CmixId, AccountId>::Nominator(vec![21]))
 			.build_and_execute(|| {
 				assert_ok!(<Staking as ElectionDataProvider>::electing_voters(None));
 				assert_eq!(MinimumActiveStake::<Test>::get(), 10);
@@ -4792,7 +4824,7 @@ fn min_commission_works() {
 				RuntimeOrigin::signed(10),
 				ValidatorPrefs { commission: Perbill::from_percent(5), blocked: false }
 			),
-			Error::<Test>::ValidatorCommissionTooLow
+			Error::<Test>::CommissionTooLow
 		);
 
 		// can only change to higher.
@@ -4963,7 +4995,7 @@ fn force_apply_min_commission_works() {
 
 		// Given
 		assert_eq!(validators(), vec![(31, prefs(10)), (21, prefs(5)), (11, prefs(0))]);
-		MinValidatorCommission::<Test>::set(Perbill::from_percent(5));
+		MinCommission::<Test>::set(Perbill::from_percent(5));
 
 		// When applying to a commission greater than min
 		assert_ok!(Staking::force_apply_min_commission(RuntimeOrigin::signed(1), 31));
@@ -5253,7 +5285,7 @@ fn pre_bonding_era_cannot_be_claimed() {
 		mock::start_active_era(current_era);
 
 		// add a new candidate for being a validator. account 3 controlled by 4.
-		assert_ok!(Staking::bond(RuntimeOrigin::signed(3), 4, 1500, RewardDestination::Controller));
+		assert_ok!(Staking::bond(RuntimeOrigin::signed(3), 4, 1500, cmix_id(3u8)));
 
 		let claimed_rewards: BoundedVec<_, _> =
 			(start_reward_era..=last_reward_era).collect::<Vec<_>>().try_into().unwrap();
@@ -5265,6 +5297,7 @@ fn pre_bonding_era_cannot_be_claimed() {
 				active: 1500,
 				unlocking: Default::default(),
 				claimed_rewards,
+				cmix_id: cmix_id(3u8),
 			}
 		);
 
@@ -5317,7 +5350,7 @@ fn reducing_history_depth_abrupt() {
 		mock::start_active_era(current_era);
 
 		// add a new candidate for being a staker. account 3 controlled by 4.
-		assert_ok!(Staking::bond(RuntimeOrigin::signed(3), 4, 1500, RewardDestination::Controller));
+		assert_ok!(Staking::bond(RuntimeOrigin::signed(3), 4, 1500, cmix_id(3u8)));
 
 		// all previous era before the bonding action should be marked as
 		// claimed.
@@ -5331,6 +5364,7 @@ fn reducing_history_depth_abrupt() {
 				active: 1500,
 				unlocking: Default::default(),
 				claimed_rewards,
+				cmix_id: cmix_id(3u8),
 			}
 		);
 
@@ -5355,7 +5389,7 @@ fn reducing_history_depth_abrupt() {
 		);
 
 		// new stakers can still bond
-		assert_ok!(Staking::bond(RuntimeOrigin::signed(5), 6, 1200, RewardDestination::Controller));
+		assert_ok!(Staking::bond(RuntimeOrigin::signed(5), 6, 1200, cmix_id(5u8)));
 
 		// new staking ledgers created will be bounded by the current history depth
 		let last_reward_era = current_era - 1;
@@ -5370,6 +5404,7 @@ fn reducing_history_depth_abrupt() {
 				active: 1200,
 				unlocking: Default::default(),
 				claimed_rewards,
+				cmix_id: cmix_id(5u8),
 			}
 		);
 
@@ -5386,7 +5421,7 @@ fn reducing_max_unlocking_chunks_abrupt() {
 		// given a staker at era=10 and MaxUnlockChunks set to 2
 		MaxUnlockingChunks::set(2);
 		start_active_era(10);
-		assert_ok!(Staking::bond(RuntimeOrigin::signed(3), 4, 300, RewardDestination::Staked));
+		assert_ok!(Staking::bond(RuntimeOrigin::signed(3), 4, 300, cmix_id(3u8)));
 		assert!(matches!(Staking::ledger(4), Some(_)));
 
 		// when staker unbonds

@@ -787,7 +787,7 @@ benchmarks! {
 		assert_eq!(MaxNominatorsCount::<T>::get(), Some(u32::MAX));
 		assert_eq!(MaxValidatorsCount::<T>::get(), Some(u32::MAX));
 		assert_eq!(ChillThreshold::<T>::get(), Some(Percent::from_percent(100)));
-		assert_eq!(MinValidatorCommission::<T>::get(), Perbill::from_percent(100));
+		assert_eq!(MinCommission::<T>::get(), Perbill::from_percent(100));
 	}
 
 	set_staking_configs_all_remove {
@@ -805,7 +805,7 @@ benchmarks! {
 		assert!(!MaxNominatorsCount::<T>::exists());
 		assert!(!MaxValidatorsCount::<T>::exists());
 		assert!(!ChillThreshold::<T>::exists());
-		assert!(!MinValidatorCommission::<T>::exists());
+		assert!(!MinCommission::<T>::exists());
 	}
 
 	chill_other {
@@ -855,7 +855,7 @@ benchmarks! {
 		);
 
 		// Set the min commission to 75%
-		MinValidatorCommission::<T>::set(Perbill::from_percent(75));
+		MinCommission::<T>::set(Perbill::from_percent(75));
 		let caller = whitelisted_caller();
 	}: _(RawOrigin::Signed(caller), stash.clone())
 	verify {

@@ -316,7 +316,6 @@ impl crate::pallet::pallet::Config for Test {
 	type CurrencyToVote = frame_support::traits::SaturatingCurrencyToVote;
 	type CmixHandler = CmixHandlerMock;
 	type CustodyHandler = CustodyHandlerMock;
-	type AdminOrigin = frame_system::EnsureRoot<Self::AccountId>;
 	type RewardRemainder = RewardRemainderMock;
 	type RuntimeEvent = RuntimeEvent;
 	type Slash = ();
