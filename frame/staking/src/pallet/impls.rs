@@ -1278,8 +1278,6 @@ where
 	fn note_author(author: T::AccountId) {
 		Self::reward_by_ids(vec![(author, T::CmixHandler::get_block_points())])
 	}
-	fn note_uncle(_author: T::AccountId, _age: T::BlockNumber) {
-	}
 }
 
 /// This is intended to be used with `FilterHistoricalOffences`.
