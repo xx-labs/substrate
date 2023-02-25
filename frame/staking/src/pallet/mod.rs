@@ -1283,7 +1283,7 @@ pub mod pallet {
 		/// - Read: Bonded, Ledger New Controller, Ledger Old Controller
 		/// - Write: Bonded, Ledger New Controller, Ledger Old Controller
 		/// # </weight>
-		#[pallet::call_index(8)]
+		#[pallet::call_index(7)]
 		#[pallet::weight(T::WeightInfo::set_controller())]
 		pub fn set_controller(
 			origin: OriginFor<T>,
@@ -1312,7 +1312,7 @@ pub mod pallet {
 		/// Weight: O(1)
 		/// Write: Validator Count
 		/// # </weight>
-		#[pallet::call_index(9)]
+		#[pallet::call_index(8)]
 		#[pallet::weight(T::WeightInfo::set_validator_count())]
 		pub fn set_validator_count(
 			origin: OriginFor<T>,
@@ -1337,7 +1337,7 @@ pub mod pallet {
 		/// # <weight>
 		/// Same as [`Self::set_validator_count`].
 		/// # </weight>
-		#[pallet::call_index(10)]
+		#[pallet::call_index(9)]
 		#[pallet::weight(T::WeightInfo::set_validator_count())]
 		pub fn increase_validator_count(
 			origin: OriginFor<T>,
@@ -1363,7 +1363,7 @@ pub mod pallet {
 		/// # <weight>
 		/// Same as [`Self::set_validator_count`].
 		/// # </weight>
-		#[pallet::call_index(11)]
+		#[pallet::call_index(10)]
 		#[pallet::weight(T::WeightInfo::set_validator_count())]
 		pub fn scale_validator_count(origin: OriginFor<T>, factor: Percent) -> DispatchResult {
 			ensure_root(origin)?;
@@ -1394,7 +1394,7 @@ pub mod pallet {
 		/// - Weight: O(1)
 		/// - Write: ForceEra
 		/// # </weight>
-		#[pallet::call_index(12)]
+		#[pallet::call_index(11)]
 		#[pallet::weight(T::WeightInfo::force_no_eras())]
 		pub fn force_no_eras(origin: OriginFor<T>) -> DispatchResult {
 			ensure_root(origin)?;
@@ -1418,7 +1418,7 @@ pub mod pallet {
 		/// - Weight: O(1)
 		/// - Write ForceEra
 		/// # </weight>
-		#[pallet::call_index(13)]
+		#[pallet::call_index(12)]
 		#[pallet::weight(T::WeightInfo::force_new_era())]
 		pub fn force_new_era(origin: OriginFor<T>) -> DispatchResult {
 			ensure_root(origin)?;
@@ -1429,7 +1429,7 @@ pub mod pallet {
 		/// Set the validators who cannot be slashed (if any).
 		///
 		/// The dispatch origin must be Root.
-		#[pallet::call_index(14)]
+		#[pallet::call_index(13)]
 		#[pallet::weight(T::WeightInfo::set_invulnerables(invulnerables.len() as u32))]
 		pub fn set_invulnerables(
 			origin: OriginFor<T>,
@@ -1443,7 +1443,7 @@ pub mod pallet {
 		/// Force a current staker to become completely unstaked, immediately.
 		///
 		/// The dispatch origin must be Root.
-		#[pallet::call_index(15)]
+		#[pallet::call_index(14)]
 		#[pallet::weight(T::WeightInfo::force_unstake(*num_slashing_spans))]
 		pub fn force_unstake(
 			origin: OriginFor<T>,
@@ -1469,7 +1469,7 @@ pub mod pallet {
 		/// The election process starts multiple blocks before the end of the era.
 		/// If this is called just before a new era is triggered, the election process may not
 		/// have enough blocks to get a result.
-		#[pallet::call_index(16)]
+		#[pallet::call_index(15)]
 		#[pallet::weight(T::WeightInfo::force_new_era_always())]
 		pub fn force_new_era_always(origin: OriginFor<T>) -> DispatchResult {
 			ensure_root(origin)?;
@@ -1482,7 +1482,7 @@ pub mod pallet {
 		/// Can be called by the `T::AdminOrigin`.
 		///
 		/// Parameters: era and indices of the slashes for that era to kill.
-		#[pallet::call_index(17)]
+		#[pallet::call_index(16)]
 		#[pallet::weight(T::WeightInfo::cancel_deferred_slash(slash_indices.len() as u32))]
 		pub fn cancel_deferred_slash(
 			origin: OriginFor<T>,
@@ -1523,7 +1523,7 @@ pub mod pallet {
 		/// N is the Number of payouts for the validator (including the validator)
 		/// Weight: O(N)
 		/// # </weight>
-		#[pallet::call_index(18)]
+		#[pallet::call_index(17)]
 		#[pallet::weight(T::WeightInfo::payout_stakers_alive_staked(
 			T::MaxNominatorRewardedPerValidator::get()
 		))]
@@ -1545,7 +1545,7 @@ pub mod pallet {
 		/// - Bounded by `MaxUnlockingChunks`.
 		/// - Storage changes: Can't increase storage, only decrease it.
 		/// # </weight>
-		#[pallet::call_index(19)]
+		#[pallet::call_index(18)]
 		#[pallet::weight(T::WeightInfo::rebond(T::MaxUnlockingChunks::get() as u32))]
 		pub fn rebond(
 			origin: OriginFor<T>,

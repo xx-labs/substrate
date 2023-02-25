@@ -859,7 +859,7 @@ pub mod pallet {
 		///   voted on. Weight is charged as if maximum votes.
 		// NOTE: weight must cover an incorrect voting of origin with max votes, this is ensure
 		// because a valid delegation cover decoding a direct voting with max votes.
-		#[pallet::call_index(10)]
+		#[pallet::call_index(11)]
 		#[pallet::weight(T::WeightInfo::delegate(T::MaxVotes::get()))]
 		pub fn delegate(
 			origin: OriginFor<T>,
@@ -888,7 +888,7 @@ pub mod pallet {
 		///   voted on. Weight is charged as if maximum votes.
 		// NOTE: weight must cover an incorrect voting of origin with max votes, this is ensure
 		// because a valid delegation cover decoding a direct voting with max votes.
-		#[pallet::call_index(11)]
+		#[pallet::call_index(12)]
 		#[pallet::weight(T::WeightInfo::undelegate(T::MaxVotes::get()))]
 		pub fn undelegate(origin: OriginFor<T>) -> DispatchResultWithPostInfo {
 			let who = ensure_signed(origin)?;
@@ -901,7 +901,7 @@ pub mod pallet {
 		/// The dispatch origin of this call must be _Root_.
 		///
 		/// Weight: `O(1)`.
-		#[pallet::call_index(12)]
+		#[pallet::call_index(13)]
 		#[pallet::weight(T::WeightInfo::clear_public_proposals())]
 		pub fn clear_public_proposals(origin: OriginFor<T>) -> DispatchResult {
 			ensure_root(origin)?;
@@ -916,7 +916,7 @@ pub mod pallet {
 		/// - `target`: The account to remove the lock on.
 		///
 		/// Weight: `O(R)` with R number of vote of target.
-		#[pallet::call_index(13)]
+		#[pallet::call_index(19)]
 		#[pallet::weight(T::WeightInfo::unlock_set(T::MaxVotes::get()).max(T::WeightInfo::unlock_remove(T::MaxVotes::get())))]
 		pub fn unlock(origin: OriginFor<T>, target: AccountIdLookupOf<T>) -> DispatchResult {
 			ensure_signed(origin)?;
@@ -952,7 +952,7 @@ pub mod pallet {
 		///
 		/// Weight: `O(R + log R)` where R is the number of referenda that `target` has voted on.
 		///   Weight is calculated for the maximum number of vote.
-		#[pallet::call_index(14)]
+		#[pallet::call_index(20)]
 		#[pallet::weight(T::WeightInfo::remove_vote(T::MaxVotes::get()))]
 		pub fn remove_vote(origin: OriginFor<T>, index: ReferendumIndex) -> DispatchResult {
 			let who = ensure_signed(origin)?;
@@ -974,7 +974,7 @@ pub mod pallet {
 		///
 		/// Weight: `O(R + log R)` where R is the number of referenda that `target` has voted on.
 		///   Weight is calculated for the maximum number of vote.
-		#[pallet::call_index(15)]
+		#[pallet::call_index(21)]
 		#[pallet::weight(T::WeightInfo::remove_other_vote(T::MaxVotes::get()))]
 		pub fn remove_other_vote(
 			origin: OriginFor<T>,
@@ -1003,7 +1003,7 @@ pub mod pallet {
 		///
 		/// Weight: `O(p)` (though as this is an high-privilege dispatch, we assume it has a
 		///   reasonable value).
-		#[pallet::call_index(16)]
+		#[pallet::call_index(23)]
 		#[pallet::weight((T::WeightInfo::blacklist(), DispatchClass::Operational))]
 		pub fn blacklist(
 			origin: OriginFor<T>,
@@ -1053,7 +1053,7 @@ pub mod pallet {
 		/// - `prop_index`: The index of the proposal to cancel.
 		///
 		/// Weight: `O(p)` where `p = PublicProps::<T>::decode_len()`
-		#[pallet::call_index(17)]
+		#[pallet::call_index(24)]
 		#[pallet::weight(T::WeightInfo::cancel_proposal())]
 		pub fn cancel_proposal(
 			origin: OriginFor<T>,
