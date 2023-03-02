@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2018-2022 Parity Technologies (UK) Ltd.
+// Copyright (C) Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -32,10 +32,10 @@ use frame_support::{
 	pallet_prelude::Get,
 	parameter_types,
 	traits::{
-		fungible::ItemOf, AsEnsureOriginWithArg, ConstBool, ConstU128, ConstU16, ConstU32,
-		Currency, EitherOfDiverse, EqualPrivilegeOnly, Everything, Imbalance, InstanceFilter,
-		KeyOwnerProofSystem, LockIdentifier, Nothing, OnUnbalanced, U128CurrencyToVote,
-		WithdrawReasons,
+		fungible::ItemOf, tokens::nonfungibles_v2::Inspect, AsEnsureOriginWithArg, ConstBool,
+		ConstU128, ConstU16, ConstU32, Currency, EitherOfDiverse, EqualPrivilegeOnly, Everything,
+		Imbalance, InstanceFilter, KeyOwnerProofSystem, LockIdentifier, Nothing, OnUnbalanced,
+		U128CurrencyToVote, WithdrawReasons,
 	},
 	weights::{
 		constants::{
@@ -233,7 +233,7 @@ impl frame_system::Config for Runtime {
 	type MaxConsumers = ConstU32<16>;
 }
 
-impl pallet_randomness_collective_flip::Config for Runtime {}
+impl pallet_insecure_randomness_collective_flip::Config for Runtime {}
 
 impl pallet_utility::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
@@ -360,6 +360,11 @@ impl pallet_scheduler::Config for Runtime {
 	type WeightInfo = pallet_scheduler::weights::SubstrateWeight<Runtime>;
 	type OriginPrivilegeCmp = EqualPrivilegeOnly;
 	type Preimages = Preimage;
+}
+
+impl pallet_glutton::Config for Runtime {
+	type RuntimeEvent = RuntimeEvent;
+	type WeightInfo = pallet_glutton::weights::SubstrateWeight<Runtime>;
 }
 
 parameter_types! {
@@ -945,6 +950,7 @@ impl pallet_democracy::Config for Runtime {
 	/// (NTB) vote.
 	type ExternalDefaultOrigin =
 		pallet_collective::EnsureProportionAtLeast<AccountId, CouncilCollective, 1, 1>;
+	type SubmitOrigin = EnsureSigned<AccountId>;
 	/// Two thirds of the technical committee can have an ExternalMajority/ExternalDefault vote
 	/// be tabled immediately and with a shorter voting/enactment period.
 	type FastTrackOrigin =
@@ -994,6 +1000,7 @@ impl pallet_collective::Config<CouncilCollective> for Runtime {
 	type MaxMembers = CouncilMaxMembers;
 	type DefaultVote = pallet_collective::PrimeDefaultVote;
 	type WeightInfo = pallet_collective::weights::SubstrateWeight<Runtime>;
+	type SetMembersOrigin = EnsureRoot<Self::AccountId>;
 }
 
 parameter_types! {
@@ -1005,8 +1012,9 @@ parameter_types! {
 	pub const TermDuration: BlockNumber = 7 * DAYS;
 	pub const DesiredMembers: u32 = 13;
 	pub const DesiredRunnersUp: u32 = 7;
-	pub const MaxVoters: u32 = 10 * 1000;
-	pub const MaxCandidates: u32 = 1000;
+	pub const MaxVotesPerVoter: u32 = 16;
+	pub const MaxVoters: u32 = 512;
+	pub const MaxCandidates: u32 = 64;
 	pub const ElectionsPhragmenPalletId: LockIdentifier = *b"phrelect";
 }
 
@@ -1031,6 +1039,7 @@ impl pallet_elections_phragmen::Config for Runtime {
 	type DesiredRunnersUp = DesiredRunnersUp;
 	type TermDuration = TermDuration;
 	type MaxVoters = MaxVoters;
+	type MaxVotesPerVoter = MaxVotesPerVoter;
 	type MaxCandidates = MaxCandidates;
 	type WeightInfo = pallet_elections_phragmen::weights::SubstrateWeight<Runtime>;
 }
@@ -1051,6 +1060,7 @@ impl pallet_collective::Config<TechnicalCollective> for Runtime {
 	type MaxMembers = TechnicalMaxMembers;
 	type DefaultVote = pallet_collective::PrimeDefaultVote;
 	type WeightInfo = pallet_collective::weights::SubstrateWeight<Runtime>;
+	type SetMembersOrigin = EnsureRoot<Self::AccountId>;
 }
 
 type EnsureRootOrHalfCouncil = EitherOfDiverse<
@@ -1564,6 +1574,7 @@ impl pallet_uniques::Config for Runtime {
 
 parameter_types! {
 	pub Features: PalletFeatures = PalletFeatures::all_enabled();
+	pub const MaxAttributesPerCall: u32 = 10;
 }
 
 impl pallet_nfts::Config for Runtime {
@@ -1584,7 +1595,10 @@ impl pallet_nfts::Config for Runtime {
 	type ItemAttributesApprovalsLimit = ItemAttributesApprovalsLimit;
 	type MaxTips = MaxTips;
 	type MaxDeadlineDuration = MaxDeadlineDuration;
+	type MaxAttributesPerCall = MaxAttributesPerCall;
 	type Features = Features;
+	type OffchainSignature = Signature;
+	type OffchainPublic = <Signature as traits::Verify>::Signer;
 	type WeightInfo = pallet_nfts::weights::SubstrateWeight<Runtime>;
 	#[cfg(feature = "runtime-benchmarks")]
 	type Helper = ();
@@ -1652,6 +1666,7 @@ impl pallet_collective::Config<AllianceCollective> for Runtime {
 	type MaxMembers = AllianceMaxMembers;
 	type DefaultVote = pallet_collective::PrimeDefaultVote;
 	type WeightInfo = pallet_collective::weights::SubstrateWeight<Runtime>;
+	type SetMembersOrigin = EnsureRoot<Self::AccountId>;
 }
 
 parameter_types! {
@@ -1734,12 +1749,13 @@ construct_runtime!(
 		AuthorityDiscovery: pallet_authority_discovery,
 		Offences: pallet_offences,
 		Historical: pallet_session_historical::{Pallet},
-		RandomnessCollectiveFlip: pallet_randomness_collective_flip,
+		RandomnessCollectiveFlip: pallet_insecure_randomness_collective_flip,
 		Identity: pallet_identity,
 		Society: pallet_society,
 		Recovery: pallet_recovery,
 		Vesting: pallet_vesting,
 		Scheduler: pallet_scheduler,
+		Glutton: pallet_glutton,
 		Preimage: pallet_preimage,
 		Proxy: pallet_proxy,
 		Multisig: pallet_multisig,
@@ -1871,6 +1887,7 @@ mod benches {
 		[pallet_recovery, Recovery]
 		[pallet_remark, Remark]
 		[pallet_scheduler, Scheduler]
+		[pallet_glutton, Glutton]
 		[pallet_session, SessionBench::<Runtime>]
 		[pallet_staking, Staking]
 		[pallet_state_trie_migration, StateTrieMigration]
@@ -1979,8 +1996,22 @@ impl_runtime_apis! {
 	}
 
 	impl pallet_nomination_pools_runtime_api::NominationPoolsApi<Block, AccountId, Balance> for Runtime {
-		fn pending_rewards(member_account: AccountId) -> Balance {
-			NominationPools::pending_rewards(member_account).unwrap_or_default()
+		fn pending_rewards(who: AccountId) -> Balance {
+			NominationPools::api_pending_rewards(who).unwrap_or_default()
+		}
+
+		fn points_to_balance(pool_id: pallet_nomination_pools::PoolId, points: Balance) -> Balance {
+			NominationPools::api_points_to_balance(pool_id, points)
+		}
+
+		fn balance_to_points(pool_id: pallet_nomination_pools::PoolId, new_funds: Balance) -> Balance {
+			NominationPools::api_balance_to_points(pool_id, new_funds)
+		}
+	}
+
+	impl pallet_staking_runtime_api::StakingApi<Block, Balance> for Runtime {
+		fn nominations_quota(balance: Balance) -> u32 {
+			Staking::api_nominations_quota(balance)
 		}
 	}
 
@@ -2149,6 +2180,50 @@ impl_runtime_apis! {
 		}
 		fn query_length_to_fee(length: u32) -> Balance {
 			TransactionPayment::length_to_fee(length)
+		}
+	}
+
+	impl pallet_nfts_runtime_api::NftsApi<Block, AccountId, u32, u32> for Runtime {
+		fn owner(collection: u32, item: u32) -> Option<AccountId> {
+			<Nfts as Inspect<AccountId>>::owner(&collection, &item)
+		}
+
+		fn collection_owner(collection: u32) -> Option<AccountId> {
+			<Nfts as Inspect<AccountId>>::collection_owner(&collection)
+		}
+
+		fn attribute(
+			collection: u32,
+			item: u32,
+			key: Vec<u8>,
+		) -> Option<Vec<u8>> {
+			<Nfts as Inspect<AccountId>>::attribute(&collection, &item, &key)
+		}
+
+		fn custom_attribute(
+			account: AccountId,
+			collection: u32,
+			item: u32,
+			key: Vec<u8>,
+		) -> Option<Vec<u8>> {
+			<Nfts as Inspect<AccountId>>::custom_attribute(
+				&account,
+				&collection,
+				&item,
+				&key,
+			)
+		}
+
+		fn system_attribute(
+			collection: u32,
+			item: u32,
+			key: Vec<u8>,
+		) -> Option<Vec<u8>> {
+			<Nfts as Inspect<AccountId>>::system_attribute(&collection, &item, &key)
+		}
+
+		fn collection_attribute(collection: u32, key: Vec<u8>) -> Option<Vec<u8>> {
+			<Nfts as Inspect<AccountId>>::collection_attribute(&collection, &key)
 		}
 	}
 
