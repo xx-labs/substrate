@@ -1130,7 +1130,7 @@ pub mod pallet {
 		///     - `Root` to set a metadata for an ongoing referendum.
 		/// - `owner`: an identifier of a metadata owner.
 		/// - `maybe_hash`: The hash of an on-chain stored preimage. `None` to clear a metadata.
-		#[pallet::call_index(18)]
+		#[pallet::call_index(25)]
 		#[pallet::weight(
 			match (owner, maybe_hash) {
 				(MetadataOwner::External, Some(_)) => T::WeightInfo::set_external_metadata(),
