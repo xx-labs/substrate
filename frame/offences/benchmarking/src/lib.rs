@@ -109,7 +109,7 @@ fn create_offender<T: Config>(n: u32, nominators: u32) -> Result<Offender<T>, &'
 	let stash: T::AccountId = account("stash", n, SEED);
 	let controller: T::AccountId = account("controller", n, SEED);
 	let controller_lookup: LookupSourceOf<T> = T::Lookup::unlookup(controller.clone());
-	let cmix_id = T::Hashing::hash(&mut SEED.to_be_bytes());
+	let cmix_id = T::Hashing::hash(&mut n.to_be_bytes());
 	let amount = bond_amount::<T>();
 	// add twice as much balance to prevent the account from being killed.
 	let free_amount = amount.saturating_mul(2u32.into());
@@ -141,7 +141,7 @@ fn create_offender<T: Config>(n: u32, nominators: u32) -> Result<Offender<T>, &'
 			RawOrigin::Signed(nominator_stash.clone()).into(),
 			nominator_controller_lookup.clone(),
 			amount.clone(),
-			Some(cmix_id.clone()),
+			None,
 		)?;
 
 		let selected_validators: Vec<LookupSourceOf<T>> = vec![controller_lookup.clone()];
