@@ -761,12 +761,12 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 			.saturating_add(T::DbWeight::get().writes(6_u64))
 	}
 	fn set_cmix_id() -> Weight {
-		Weight::from_ref_time(83_389_000 as u64)
+		Weight::from_parts(83_389_000, 3019)
 			.saturating_add(T::DbWeight::get().reads(2 as u64))
 			.saturating_add(T::DbWeight::get().writes(1 as u64))
 	}
 	fn transfer_cmix_id() -> Weight {
-		Weight::from_ref_time(83_389_000 as u64)
+		Weight::from_parts(83_389_000, 19438)
 			.saturating_add(T::DbWeight::get().reads(9 as u64))
 			.saturating_add(T::DbWeight::get().writes(2 as u64))
 	}
@@ -1473,12 +1473,12 @@ impl WeightInfo for () {
 			.saturating_add(RocksDbWeight::get().writes(6_u64))
 	}
 	fn set_cmix_id() -> Weight {
-		Weight::from_ref_time(83_389_000 as u64)
+		Weight::from_parts(83_389_000, 3019)
 			.saturating_add(RocksDbWeight::get().reads(2 as u64))
 			.saturating_add(RocksDbWeight::get().writes(1 as u64))
 	}
 	fn transfer_cmix_id() -> Weight {
-		Weight::from_ref_time(83_389_000 as u64)
+		Weight::from_parts(83_389_000, 19438)
 			.saturating_add(RocksDbWeight::get().reads(9 as u64))
 			.saturating_add(RocksDbWeight::get().writes(2 as u64))
 	}

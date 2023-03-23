@@ -341,7 +341,7 @@ pub mod v10 {
 
 				// Now do the V10 migration
 				log!(info, "applying any pending slashes");
-				let pending_slashes = <Pallet<T> as Store>::UnappliedSlashes::iter().take(512);
+				let pending_slashes = UnappliedSlashes::<T>::iter().take(512);
 				for (era, slashes) in pending_slashes {
 					for slash in slashes {
 						// in the old slashing scheme, the slash era was the key at which we read
