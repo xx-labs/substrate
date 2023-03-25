@@ -1771,7 +1771,7 @@ pub mod pallet {
 		/// ## Complexity
 		/// - Independent of the arguments. Moderate complexity.
 		/// - O(1)
-		/// - Two Reads
+		/// - Three Reads
 		/// - Two writes
 		#[pallet::call_index(24)]
 		#[pallet::weight(T::WeightInfo::set_cmix_id())]

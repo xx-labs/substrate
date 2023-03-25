@@ -873,6 +873,58 @@ benchmarks! {
 		assert_eq!(MinCommission::<T>::get(), Perbill::from_percent(100));
 	}
 
+	set_cmix_id {
+		let stash = create_funded_user::<T>("stash", USER_SEED, 100);
+		let controller = create_funded_user::<T>("controller", USER_SEED, 100);
+		let controller_lookup = T::Lookup::unlookup(controller.clone());
+		let amount = T::Currency::minimum_balance() * 10u32.into();
+		let cmix_id = T::Hashing::hash(&mut USER_SEED.to_be_bytes());
+		Staking::<T>::bond(
+			RawOrigin::Signed(stash.clone()).into(),
+			controller_lookup,
+			amount,
+			None,
+		)?;
+		whitelist_account!(stash);
+	}: _(RawOrigin::Signed(stash), cmix_id)
+	verify {
+		assert!(CmixIds::<T>::contains_key(&cmix_id));
+		assert_eq!(Ledger::<T>::get(&controller).unwrap().cmix_id, Some(cmix_id));
+	}
+
+	transfer_cmix_id {
+		// Create first stash/controller pair
+		let stash = create_funded_user::<T>("stash", USER_SEED, 100);
+		let controller = create_funded_user::<T>("controller", USER_SEED, 100);
+		let controller_lookup = T::Lookup::unlookup(controller.clone());
+		let amount = T::Currency::minimum_balance() * 10u32.into();
+		let cmix_id = T::Hashing::hash(&mut USER_SEED.to_be_bytes());
+		Staking::<T>::bond(
+			RawOrigin::Signed(stash.clone()).into(),
+			controller_lookup,
+			amount.clone(),
+			Some(cmix_id),
+		)?;
+		assert!(CmixIds::<T>::contains_key(&cmix_id));
+		assert_eq!(Ledger::<T>::get(&controller).unwrap().cmix_id, Some(cmix_id));
+		// Create second stash/controller pair
+		let stash2 = create_funded_user::<T>("stash2", USER_SEED, 100);
+		let controller2 = create_funded_user::<T>("controller2", USER_SEED, 100);
+		let controller_lookup2 = T::Lookup::unlookup(controller2.clone());
+		Staking::<T>::bond(
+			RawOrigin::Signed(stash2.clone()).into(),
+			controller_lookup2,
+			amount,
+			None,
+		)?;
+		whitelist_account!(stash);
+	}: _(RawOrigin::Signed(stash), stash2)
+	verify {
+		assert!(CmixIds::<T>::contains_key(&cmix_id));
+		assert!(Ledger::<T>::get(&controller).unwrap().cmix_id.is_none());
+		assert_eq!(Ledger::<T>::get(&controller2).unwrap().cmix_id, Some(cmix_id));
+	}
+
 	impl_benchmark_test_suite!(
 		Staking,
 		crate::mock::ExtBuilder::default().has_stakers(true),
