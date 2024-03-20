@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2019-2022 Parity Technologies (UK) Ltd.
+// Copyright (C) Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -39,9 +39,6 @@
 //!   number of signed origins.
 //! * `approve_as_multi` - Approve a call from a composite origin.
 //! * `cancel_as_multi` - Cancel a call from a composite origin.
-//!
-//! [`Call`]: ./enum.Call.html
-//! [`Config`]: ./trait.Config.html
 
 // Ensure we're `no_std` when compiling for Wasm.
 #![cfg_attr(not(feature = "std"), no_std)]
@@ -51,7 +48,7 @@ pub mod migrations;
 mod tests;
 pub mod weights;
 
-use codec::{Decode, Encode};
+use codec::{Decode, Encode, MaxEncodedLen};
 use frame_support::{
 	dispatch::{
 		DispatchErrorWithPostInfo, DispatchResult, DispatchResultWithPostInfo, GetDispatchInfo,
@@ -60,7 +57,7 @@ use frame_support::{
 	ensure,
 	traits::{Currency, Get, ReservableCurrency},
 	weights::Weight,
-	RuntimeDebug,
+	BoundedVec, RuntimeDebug,
 };
 use frame_system::{self as system, RawOrigin};
 use scale_info::TypeInfo;
@@ -94,7 +91,9 @@ type BalanceOf<T> =
 /// A global extrinsic index, formed as the extrinsic index within a block, together with that
 /// block's height. This allows a transaction in which a multisig operation of a particular
 /// composite was created to be uniquely identified.
-#[derive(Copy, Clone, Eq, PartialEq, Encode, Decode, Default, RuntimeDebug, TypeInfo)]
+#[derive(
+	Copy, Clone, Eq, PartialEq, Encode, Decode, Default, RuntimeDebug, TypeInfo, MaxEncodedLen,
+)]
 pub struct Timepoint<BlockNumber> {
 	/// The height of the chain at the point in time.
 	height: BlockNumber,
@@ -103,8 +102,12 @@ pub struct Timepoint<BlockNumber> {
 }
 
 /// An open multisig operation.
-#[derive(Clone, Eq, PartialEq, Encode, Decode, Default, RuntimeDebug, TypeInfo)]
-pub struct Multisig<BlockNumber, Balance, AccountId> {
+#[derive(Clone, Eq, PartialEq, Encode, Decode, Default, RuntimeDebug, TypeInfo, MaxEncodedLen)]
+#[scale_info(skip_type_params(MaxApprovals))]
+pub struct Multisig<BlockNumber, Balance, AccountId, MaxApprovals>
+where
+	MaxApprovals: Get<u32>,
+{
 	/// The extrinsic when the multisig operation was opened.
 	when: Timepoint<BlockNumber>,
 	/// The amount held in reserve of the `depositor`, to be returned once the operation ends.
@@ -112,7 +115,7 @@ pub struct Multisig<BlockNumber, Balance, AccountId> {
 	/// The account who opened it (i.e. the first to approve it).
 	depositor: AccountId,
 	/// The approvals achieved so far, including the depositor. Always sorted.
-	approvals: Vec<AccountId>,
+	approvals: BoundedVec<AccountId, MaxApprovals>,
 }
 
 type CallHash = [u8; 32];
@@ -159,7 +162,7 @@ pub mod pallet {
 
 		/// The maximum amount of signatories allowed in the multisig.
 		#[pallet::constant]
-		type MaxSignatories: Get<u16>;
+		type MaxSignatories: Get<u32>;
 
 		/// Weight information for extrinsics in this pallet.
 		type WeightInfo: WeightInfo;
@@ -169,8 +172,6 @@ pub mod pallet {
 	const STORAGE_VERSION: StorageVersion = StorageVersion::new(1);
 
 	#[pallet::pallet]
-	#[pallet::generate_store(pub(super) trait Store)]
-	#[pallet::without_storage_info]
 	#[pallet::storage_version(STORAGE_VERSION)]
 	pub struct Pallet<T>(_);
 
@@ -182,7 +183,7 @@ pub mod pallet {
 		T::AccountId,
 		Blake2_128Concat,
 		[u8; 32],
-		Multisig<T::BlockNumber, BalanceOf<T>, T::AccountId>,
+		Multisig<T::BlockNumber, BalanceOf<T>, T::AccountId, T::MaxSignatories>,
 	>;
 
 	#[pallet::error]
@@ -261,12 +262,9 @@ pub mod pallet {
 		///
 		/// Result is equivalent to the dispatched result.
 		///
-		/// # <weight>
+		/// ## Complexity
 		/// O(Z + C) where Z is the length of the call and C its execution weight.
-		/// -------------------------------
-		/// - DB Weight: None
-		/// - Plus Call Weight
-		/// # </weight>
+		#[pallet::call_index(0)]
 		#[pallet::weight({
 			let dispatch_info = call.get_dispatch_info();
 			(
@@ -341,7 +339,7 @@ pub mod pallet {
 		/// on success, result is `Ok` and the result from the interior call, if it was executed,
 		/// may be found in the deposited `MultisigExecuted` event.
 		///
-		/// # <weight>
+		/// ## Complexity
 		/// - `O(S + Z + Call)`.
 		/// - Up to one balance-reserve or unreserve operation.
 		/// - One passthrough operation, one insert, both `O(S)` where `S` is the number of
@@ -354,18 +352,12 @@ pub mod pallet {
 		/// - The weight of the `call`.
 		/// - Storage: inserts one item, value size bounded by `MaxSignatories`, with a deposit
 		///   taken for its lifetime of `DepositBase + threshold * DepositFactor`.
-		/// -------------------------------
-		/// - DB Weight:
-		///     - Reads: Multisig Storage, [Caller Account]
-		///     - Writes: Multisig Storage, [Caller Account]
-		/// - Plus Call Weight
-		/// # </weight>
+		#[pallet::call_index(1)]
 		#[pallet::weight({
 			let s = other_signatories.len() as u32;
 			let z = call.using_encoded(|d| d.len()) as u32;
 
 			T::WeightInfo::as_multi_create(s, z)
-			.max(T::WeightInfo::as_multi_create_store(s, z))
 			.max(T::WeightInfo::as_multi_approve(s, z))
 			.max(T::WeightInfo::as_multi_complete(s, z))
 			.saturating_add(*max_weight)
@@ -408,7 +400,7 @@ pub mod pallet {
 		///
 		/// NOTE: If this is the final approval, you will want to use `as_multi` instead.
 		///
-		/// # <weight>
+		/// ## Complexity
 		/// - `O(S)`.
 		/// - Up to one balance-reserve or unreserve operation.
 		/// - One passthrough operation, one insert, both `O(S)` where `S` is the number of
@@ -419,17 +411,12 @@ pub mod pallet {
 		/// - One event.
 		/// - Storage: inserts one item, value size bounded by `MaxSignatories`, with a deposit
 		///   taken for its lifetime of `DepositBase + threshold * DepositFactor`.
-		/// ----------------------------------
-		/// - DB Weight:
-		///     - Read: Multisig Storage, [Caller Account]
-		///     - Write: Multisig Storage, [Caller Account]
-		/// # </weight>
+		#[pallet::call_index(2)]
 		#[pallet::weight({
 			let s = other_signatories.len() as u32;
 
 			T::WeightInfo::approve_as_multi_create(s)
 				.max(T::WeightInfo::approve_as_multi_approve(s))
-				.max(T::WeightInfo::approve_as_multi_complete(s))
 				.saturating_add(*max_weight)
 		})]
 		pub fn approve_as_multi(
@@ -463,7 +450,7 @@ pub mod pallet {
 		/// transaction for this dispatch.
 		/// - `call_hash`: The hash of the call to be executed.
 		///
-		/// # <weight>
+		/// ## Complexity
 		/// - `O(S)`.
 		/// - Up to one balance-reserve or unreserve operation.
 		/// - One passthrough operation, one insert, both `O(S)` where `S` is the number of
@@ -472,11 +459,7 @@ pub mod pallet {
 		/// - One event.
 		/// - I/O: 1 read `O(S)`, one remove.
 		/// - Storage: removes one item.
-		/// ----------------------------------
-		/// - DB Weight:
-		///     - Read: Multisig Storage, [Caller Account], Refund Account
-		///     - Write: Multisig Storage, [Caller Account], Refund Account
-		/// # </weight>
+		#[pallet::call_index(3)]
 		#[pallet::weight(T::WeightInfo::cancel_as_multi(other_signatories.len() as u32))]
 		pub fn cancel_as_multi(
 			origin: OriginFor<T>,
@@ -601,7 +584,9 @@ impl<T: Config> Pallet<T> {
 
 				if let Some(pos) = maybe_pos {
 					// Record approval.
-					m.approvals.insert(pos, who.clone());
+					m.approvals
+						.try_insert(pos, who.clone())
+						.map_err(|_| Error::<T>::TooManySignatories)?;
 					<Multisigs<T>>::insert(&id, call_hash, m);
 					Self::deposit_event(Event::MultisigApproval {
 						approving: who,
@@ -629,6 +614,9 @@ impl<T: Config> Pallet<T> {
 
 			T::Currency::reserve(&who, deposit)?;
 
+			let initial_approvals =
+				vec![who.clone()].try_into().map_err(|_| Error::<T>::TooManySignatories)?;
+
 			<Multisigs<T>>::insert(
 				&id,
 				call_hash,
@@ -636,7 +624,7 @@ impl<T: Config> Pallet<T> {
 					when: Self::timepoint(),
 					deposit,
 					depositor: who.clone(),
-					approvals: vec![who.clone()],
+					approvals: initial_approvals,
 				},
 			);
 			Self::deposit_event(Event::NewMultisig { approving: who, multisig: id, call_hash });

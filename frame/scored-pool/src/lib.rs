@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2019-2022 Parity Technologies (UK) Ltd.
+// Copyright (C) Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -135,7 +135,6 @@ pub mod pallet {
 	use frame_system::pallet_prelude::*;
 
 	#[pallet::pallet]
-	#[pallet::generate_store(pub(super) trait Store)]
 	pub struct Pallet<T, I = ()>(_);
 
 	#[pallet::config]
@@ -311,6 +310,7 @@ pub mod pallet {
 		///
 		/// The `index` parameter of this function must be set to
 		/// the index of the transactor in the `Pool`.
+		#[pallet::call_index(0)]
 		#[pallet::weight(0)]
 		pub fn submit_candidacy(origin: OriginFor<T>) -> DispatchResult {
 			let who = ensure_signed(origin)?;
@@ -340,6 +340,7 @@ pub mod pallet {
 		///
 		/// The `index` parameter of this function must be set to
 		/// the index of the transactor in the `Pool`.
+		#[pallet::call_index(1)]
 		#[pallet::weight(0)]
 		pub fn withdraw_candidacy(origin: OriginFor<T>, index: u32) -> DispatchResult {
 			let who = ensure_signed(origin)?;
@@ -358,6 +359,7 @@ pub mod pallet {
 		///
 		/// The `index` parameter of this function must be set to
 		/// the index of `dest` in the `Pool`.
+		#[pallet::call_index(2)]
 		#[pallet::weight(0)]
 		pub fn kick(
 			origin: OriginFor<T>,
@@ -382,6 +384,7 @@ pub mod pallet {
 		///
 		/// The `index` parameter of this function must be set to
 		/// the index of the `dest` in the `Pool`.
+		#[pallet::call_index(3)]
 		#[pallet::weight(0)]
 		pub fn score(
 			origin: OriginFor<T>,
@@ -421,6 +424,7 @@ pub mod pallet {
 		/// (this happens each `Period`).
 		///
 		/// May only be called from root.
+		#[pallet::call_index(4)]
 		#[pallet::weight(0)]
 		pub fn change_member_count(origin: OriginFor<T>, count: u32) -> DispatchResult {
 			ensure_root(origin)?;

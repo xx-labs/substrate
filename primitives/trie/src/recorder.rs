@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2021 Parity Technologies (UK) Ltd.
+// Copyright (C) Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -41,7 +41,7 @@ const LOG_TARGET: &str = "trie-recorder";
 /// The internals of [`Recorder`].
 struct RecorderInner<H> {
 	/// The keys for that we have recorded the trie nodes and if we have recorded up to the value.
-	recorded_keys: HashMap<Vec<u8>, RecordedForKey>,
+	recorded_keys: HashMap<H, HashMap<Vec<u8>, RecordedForKey>>,
 	/// The encoded nodes we accessed while recording.
 	accessed_nodes: HashMap<H, Vec<u8>>,
 }
@@ -80,9 +80,17 @@ impl<H: Hasher> Clone for Recorder<H> {
 
 impl<H: Hasher> Recorder<H> {
 	/// Returns the recorder as [`TrieRecorder`](trie_db::TrieRecorder) compatible type.
-	pub fn as_trie_recorder(&self) -> impl trie_db::TrieRecorder<H::Out> + '_ {
+	///
+	/// - `storage_root`: The storage root of the trie for which accesses are recorded. This is
+	///   important when recording access to different tries at once (like top and child tries).
+	#[inline]
+	pub fn as_trie_recorder(
+		&self,
+		storage_root: H::Out,
+	) -> impl trie_db::TrieRecorder<H::Out> + '_ {
 		TrieRecorder::<H, _> {
 			inner: self.inner.lock(),
+			storage_root,
 			encoded_size_estimation: self.encoded_size_estimation.clone(),
 			_phantom: PhantomData,
 		}
@@ -132,6 +140,7 @@ impl<H: Hasher> Recorder<H> {
 /// The [`TrieRecorder`](trie_db::TrieRecorder) implementation.
 struct TrieRecorder<H: Hasher, I> {
 	inner: I,
+	storage_root: H::Out,
 	encoded_size_estimation: Arc<AtomicUsize>,
 	_phantom: PhantomData<H>,
 }
@@ -139,7 +148,7 @@ struct TrieRecorder<H: Hasher, I> {
 impl<H: Hasher, I: DerefMut<Target = RecorderInner<H::Out>>> trie_db::TrieRecorder<H::Out>
 	for TrieRecorder<H, I>
 {
-	fn record<'b>(&mut self, access: TrieAccess<'b, H::Out>) {
+	fn record(&mut self, access: TrieAccess<H::Out>) {
 		let mut encoded_size_update = 0;
 
 		match access {
@@ -191,6 +200,8 @@ impl<H: Hasher, I: DerefMut<Target = RecorderInner<H::Out>>> trie_db::TrieRecord
 
 				self.inner
 					.recorded_keys
+					.entry(self.storage_root)
+					.or_default()
 					.entry(full_key.to_vec())
 					.and_modify(|e| *e = RecordedForKey::Value)
 					.or_insert(RecordedForKey::Value);
@@ -206,6 +217,8 @@ impl<H: Hasher, I: DerefMut<Target = RecorderInner<H::Out>>> trie_db::TrieRecord
 				// accounted for by the recorded node that holds the hash.
 				self.inner
 					.recorded_keys
+					.entry(self.storage_root)
+					.or_default()
 					.entry(full_key.to_vec())
 					.or_insert(RecordedForKey::Hash);
 			},
@@ -221,6 +234,8 @@ impl<H: Hasher, I: DerefMut<Target = RecorderInner<H::Out>>> trie_db::TrieRecord
 				// that the value doesn't exist in the trie.
 				self.inner
 					.recorded_keys
+					.entry(self.storage_root)
+					.or_default()
 					.entry(full_key.to_vec())
 					.and_modify(|e| *e = RecordedForKey::Value)
 					.or_insert(RecordedForKey::Value);
@@ -231,7 +246,11 @@ impl<H: Hasher, I: DerefMut<Target = RecorderInner<H::Out>>> trie_db::TrieRecord
 	}
 
 	fn trie_nodes_recorded_for_key(&self, key: &[u8]) -> RecordedForKey {
-		self.inner.recorded_keys.get(key).copied().unwrap_or(RecordedForKey::None)
+		self.inner
+			.recorded_keys
+			.get(&self.storage_root)
+			.and_then(|k| k.get(key).copied())
+			.unwrap_or(RecordedForKey::None)
 	}
 }
 
@@ -267,7 +286,7 @@ mod tests {
 		let recorder = Recorder::default();
 
 		{
-			let mut trie_recorder = recorder.as_trie_recorder();
+			let mut trie_recorder = recorder.as_trie_recorder(root);
 			let trie = TrieDBBuilder::<Layout>::new(&db, &root)
 				.with_recorder(&mut trie_recorder)
 				.build();

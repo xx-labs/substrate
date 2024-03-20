@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2017-2022 Parity Technologies (UK) Ltd.
+// Copyright (C) Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -70,10 +70,9 @@ use frame_support::{
 		Bounded, CallerTrait, EnsureOrigin, Get, Hash as PreimageHash, IsType, OriginTrait,
 		PalletInfoAccess, PrivilegeCmp, QueryPreimage, StorageVersion, StorePreimage,
 	},
-	weights::Weight,
+	weights::{Weight, WeightMeter},
 };
 use frame_system::{self as system};
-pub use pallet::*;
 use scale_info::TypeInfo;
 use sp_io::hashing::blake2_256;
 use sp_runtime::{
@@ -81,6 +80,8 @@ use sp_runtime::{
 	BoundedVec, RuntimeDebug,
 };
 use sp_std::{borrow::Borrow, cmp::Ordering, marker::PhantomData, prelude::*};
+
+pub use pallet::*;
 pub use weights::WeightInfo;
 
 /// Just a simple index for naming period tasks.
@@ -143,25 +144,6 @@ pub type ScheduledOf<T> = Scheduled<
 	<T as frame_system::Config>::AccountId,
 >;
 
-struct WeightCounter {
-	used: Weight,
-	limit: Weight,
-}
-impl WeightCounter {
-	fn check_accrue(&mut self, w: Weight) -> bool {
-		let test = self.used.saturating_add(w);
-		if test.any_gt(self.limit) {
-			false
-		} else {
-			self.used = test;
-			true
-		}
-	}
-	fn can_accrue(&mut self, w: Weight) -> bool {
-		self.used.saturating_add(w).all_lte(self.limit)
-	}
-}
-
 pub(crate) trait MarginalWeightInfo: WeightInfo {
 	fn service_task(maybe_lookup_len: Option<usize>, named: bool, periodic: bool) -> Weight {
 		let base = Self::service_task_base();
@@ -187,10 +169,9 @@ pub mod pallet {
 	use frame_system::pallet_prelude::*;
 
 	/// The current storage version.
-	const STORAGE_VERSION: StorageVersion = StorageVersion::new(3);
+	const STORAGE_VERSION: StorageVersion = StorageVersion::new(4);
 
 	#[pallet::pallet]
-	#[pallet::generate_store(pub(super) trait Store)]
 	#[pallet::storage_version(STORAGE_VERSION)]
 	pub struct Pallet<T>(_);
 
@@ -277,15 +258,15 @@ pub mod pallet {
 		/// Dispatched some task.
 		Dispatched {
 			task: TaskAddress<T::BlockNumber>,
-			id: Option<[u8; 32]>,
+			id: Option<TaskName>,
 			result: DispatchResult,
 		},
 		/// The call for the provided hash was not found so the task has been aborted.
-		CallUnavailable { task: TaskAddress<T::BlockNumber>, id: Option<[u8; 32]> },
+		CallUnavailable { task: TaskAddress<T::BlockNumber>, id: Option<TaskName> },
 		/// The given task was unable to be renewed since the agenda is full at that block.
-		PeriodicFailed { task: TaskAddress<T::BlockNumber>, id: Option<[u8; 32]> },
+		PeriodicFailed { task: TaskAddress<T::BlockNumber>, id: Option<TaskName> },
 		/// The given task can never be executed since it is overweight.
-		PermanentlyOverweight { task: TaskAddress<T::BlockNumber>, id: Option<[u8; 32]> },
+		PermanentlyOverweight { task: TaskAddress<T::BlockNumber>, id: Option<TaskName> },
 	}
 
 	#[pallet::error]
@@ -306,16 +287,16 @@ pub mod pallet {
 	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
 		/// Execute the scheduled calls
 		fn on_initialize(now: T::BlockNumber) -> Weight {
-			let mut weight_counter =
-				WeightCounter { used: Weight::zero(), limit: T::MaximumWeight::get() };
+			let mut weight_counter = WeightMeter::from_limit(T::MaximumWeight::get());
 			Self::service_agendas(&mut weight_counter, now, u32::max_value());
-			weight_counter.used
+			weight_counter.consumed
 		}
 	}
 
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
 		/// Anonymously schedule a task.
+		#[pallet::call_index(0)]
 		#[pallet::weight(<T as Config>::WeightInfo::schedule(T::MaxScheduledPerBlock::get()))]
 		pub fn schedule(
 			origin: OriginFor<T>,
@@ -337,6 +318,7 @@ pub mod pallet {
 		}
 
 		/// Cancel an anonymously scheduled task.
+		#[pallet::call_index(1)]
 		#[pallet::weight(<T as Config>::WeightInfo::cancel(T::MaxScheduledPerBlock::get()))]
 		pub fn cancel(origin: OriginFor<T>, when: T::BlockNumber, index: u32) -> DispatchResult {
 			T::ScheduleOrigin::ensure_origin(origin.clone())?;
@@ -346,6 +328,7 @@ pub mod pallet {
 		}
 
 		/// Schedule a named task.
+		#[pallet::call_index(2)]
 		#[pallet::weight(<T as Config>::WeightInfo::schedule_named(T::MaxScheduledPerBlock::get()))]
 		pub fn schedule_named(
 			origin: OriginFor<T>,
@@ -369,6 +352,7 @@ pub mod pallet {
 		}
 
 		/// Cancel a named scheduled task.
+		#[pallet::call_index(3)]
 		#[pallet::weight(<T as Config>::WeightInfo::cancel_named(T::MaxScheduledPerBlock::get()))]
 		pub fn cancel_named(origin: OriginFor<T>, id: TaskName) -> DispatchResult {
 			T::ScheduleOrigin::ensure_origin(origin.clone())?;
@@ -378,10 +362,7 @@ pub mod pallet {
 		}
 
 		/// Anonymously schedule a task after a delay.
-		///
-		/// # <weight>
-		/// Same as [`schedule`].
-		/// # </weight>
+		#[pallet::call_index(4)]
 		#[pallet::weight(<T as Config>::WeightInfo::schedule(T::MaxScheduledPerBlock::get()))]
 		pub fn schedule_after(
 			origin: OriginFor<T>,
@@ -403,10 +384,7 @@ pub mod pallet {
 		}
 
 		/// Schedule a named task after a delay.
-		///
-		/// # <weight>
-		/// Same as [`schedule_named`](Self::schedule_named).
-		/// # </weight>
+		#[pallet::call_index(5)]
 		#[pallet::weight(<T as Config>::WeightInfo::schedule_named(T::MaxScheduledPerBlock::get()))]
 		pub fn schedule_named_after(
 			origin: OriginFor<T>,
@@ -765,6 +743,22 @@ impl<T: Config> Pallet<T> {
 		Ok(index)
 	}
 
+	/// Remove trailing `None` items of an agenda at `when`. If all items are `None` remove the
+	/// agenda record entirely.
+	fn cleanup_agenda(when: T::BlockNumber) {
+		let mut agenda = Agenda::<T>::get(when);
+		match agenda.iter().rposition(|i| i.is_some()) {
+			Some(i) if agenda.len() > i + 1 => {
+				agenda.truncate(i + 1);
+				Agenda::<T>::insert(when, agenda);
+			},
+			Some(_) => {},
+			None => {
+				Agenda::<T>::remove(when);
+			},
+		}
+	}
+
 	fn do_schedule(
 		when: DispatchTime<T::BlockNumber>,
 		maybe_periodic: Option<schedule::Period<T::BlockNumber>>,
@@ -773,6 +767,8 @@ impl<T: Config> Pallet<T> {
 		call: Bounded<<T as Config>::RuntimeCall>,
 	) -> Result<TaskAddress<T::BlockNumber>, DispatchError> {
 		let when = Self::resolve_time(when)?;
+
+		let lookup_hash = call.lookup_hash();
 
 		// sanitize maybe_periodic
 		let maybe_periodic = maybe_periodic
@@ -787,7 +783,14 @@ impl<T: Config> Pallet<T> {
 			origin,
 			_phantom: PhantomData,
 		};
-		Self::place_task(when, task).map_err(|x| x.0)
+		let res = Self::place_task(when, task).map_err(|x| x.0)?;
+
+		if let Some(hash) = lookup_hash {
+			// Request the call to be made available.
+			T::Preimages::request(&hash);
+		}
+
+		Ok(res)
 	}
 
 	fn do_cancel(
@@ -815,6 +818,7 @@ impl<T: Config> Pallet<T> {
 			if let Some(id) = s.maybe_id {
 				Lookup::<T>::remove(id);
 			}
+			Self::cleanup_agenda(when);
 			Self::deposit_event(Event::Canceled { when, index });
 			Ok(())
 		} else {
@@ -837,6 +841,7 @@ impl<T: Config> Pallet<T> {
 			ensure!(!matches!(task, Some(Scheduled { maybe_id: Some(_), .. })), Error::<T>::Named);
 			task.take().ok_or(Error::<T>::NotFound)
 		})?;
+		Self::cleanup_agenda(when);
 		Self::deposit_event(Event::Canceled { when, index });
 
 		Self::place_task(new_time, task).map_err(|x| x.0)
@@ -857,6 +862,8 @@ impl<T: Config> Pallet<T> {
 
 		let when = Self::resolve_time(when)?;
 
+		let lookup_hash = call.lookup_hash();
+
 		// sanitize maybe_periodic
 		let maybe_periodic = maybe_periodic
 			.filter(|p| p.1 > 1 && !p.0.is_zero())
@@ -871,7 +878,14 @@ impl<T: Config> Pallet<T> {
 			origin,
 			_phantom: Default::default(),
 		};
-		Self::place_task(when, task).map_err(|x| x.0)
+		let res = Self::place_task(when, task).map_err(|x| x.0)?;
+
+		if let Some(hash) = lookup_hash {
+			// Request the call to be made available.
+			T::Preimages::request(&hash);
+		}
+
+		Ok(res)
 	}
 
 	fn do_cancel_named(origin: Option<T::PalletsOrigin>, id: TaskName) -> DispatchResult {
@@ -893,6 +907,7 @@ impl<T: Config> Pallet<T> {
 					}
 					Ok(())
 				})?;
+				Self::cleanup_agenda(when);
 				Self::deposit_event(Event::Canceled { when, index });
 				Ok(())
 			} else {
@@ -918,6 +933,7 @@ impl<T: Config> Pallet<T> {
 			let task = agenda.get_mut(index as usize).ok_or(Error::<T>::NotFound)?;
 			task.take().ok_or(Error::<T>::NotFound)
 		})?;
+		Self::cleanup_agenda(when);
 		Self::deposit_event(Event::Canceled { when, index });
 		Self::place_task(new_time, task).map_err(|x| x.0)
 	}
@@ -933,7 +949,7 @@ use ServiceTaskError::*;
 
 impl<T: Config> Pallet<T> {
 	/// Service up to `max` agendas queue starting from earliest incompletely executed agenda.
-	fn service_agendas(weight: &mut WeightCounter, now: T::BlockNumber, max: u32) {
+	fn service_agendas(weight: &mut WeightMeter, now: T::BlockNumber, max: u32) {
 		if !weight.check_accrue(T::WeightInfo::service_agendas_base()) {
 			return
 		}
@@ -961,7 +977,7 @@ impl<T: Config> Pallet<T> {
 	/// Returns `true` if the agenda was fully completed, `false` if it should be revisited at a
 	/// later block.
 	fn service_agenda(
-		weight: &mut WeightCounter,
+		weight: &mut WeightMeter,
 		executed: &mut u32,
 		now: T::BlockNumber,
 		when: T::BlockNumber,
@@ -1020,6 +1036,7 @@ impl<T: Config> Pallet<T> {
 		} else {
 			Agenda::<T>::remove(when);
 		}
+
 		postponed == 0
 	}
 
@@ -1030,7 +1047,7 @@ impl<T: Config> Pallet<T> {
 	/// - realizing the task's call which can include a preimage lookup.
 	/// - Rescheduling the task for execution in a later agenda if periodic.
 	fn service_task(
-		weight: &mut WeightCounter,
+		weight: &mut WeightMeter,
 		now: T::BlockNumber,
 		when: T::BlockNumber,
 		agenda_index: u32,
@@ -1110,7 +1127,7 @@ impl<T: Config> Pallet<T> {
 	/// NOTE: Only the weight for this function will be counted (origin lookup, dispatch and the
 	/// call itself).
 	fn execute_dispatch(
-		weight: &mut WeightCounter,
+		weight: &mut WeightMeter,
 		origin: T::PalletsOrigin,
 		call: <T as Config>::RuntimeCall,
 	) -> Result<DispatchResult, ServiceTaskError> {

@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2020-2022 Parity Technologies (UK) Ltd.
+// Copyright (C) Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -72,7 +72,7 @@ mod pallet_old {
 
 			fn on_initialize(_n: T::BlockNumber) -> Weight {
 				<Dummy<T, I>>::put(T::Balance::from(10));
-				Weight::from_ref_time(10)
+				Weight::from_parts(10, 0)
 			}
 
 			fn on_finalize(_n: T::BlockNumber) {
@@ -117,7 +117,7 @@ pub mod pallet {
 	impl<T: Config<I>, I: 'static> Hooks<T::BlockNumber> for Pallet<T, I> {
 		fn on_initialize(_n: T::BlockNumber) -> Weight {
 			<Dummy<T, I>>::put(T::Balance::from(10));
-			Weight::from_ref_time(10)
+			Weight::from_parts(10, 0)
 		}
 
 		fn on_finalize(_n: T::BlockNumber) {
@@ -127,6 +127,7 @@ pub mod pallet {
 
 	#[pallet::call]
 	impl<T: Config<I>, I: 'static> Pallet<T, I> {
+		#[pallet::call_index(0)]
 		#[pallet::weight(<T::Balance as Into<u64>>::into(new_value.clone()))]
 		pub fn set_dummy(
 			origin: OriginFor<T>,
@@ -267,7 +268,7 @@ pub type Block = sp_runtime::generic::Block<Header, UncheckedExtrinsic>;
 pub type UncheckedExtrinsic = sp_runtime::generic::UncheckedExtrinsic<u32, RuntimeCall, (), ()>;
 
 frame_support::construct_runtime!(
-	pub enum Runtime where
+	pub struct Runtime where
 		Block = Block,
 		NodeBlock = Block,
 		UncheckedExtrinsic = UncheckedExtrinsic

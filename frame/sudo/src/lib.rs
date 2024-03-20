@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2017-2022 Parity Technologies (UK) Ltd.
+// Copyright (C) Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -59,7 +59,7 @@
 //! 	use frame_system::pallet_prelude::*;
 //!
 //! 	#[pallet::pallet]
-//! 	pub struct Pallet<T>(_);
+//! 	pub struct Pallet<T>(PhantomData<T>);
 //!
 //! 	#[pallet::config]
 //! 	pub trait Config: frame_system::Config {}
@@ -79,6 +79,13 @@
 //! # fn main() {}
 //! ```
 //!
+//! ### Signed Extension
+//!
+//! The Sudo pallet defines the following extension:
+//!
+//!   - [`CheckOnlySudoAccount`]: Ensures that the signed transactions are only valid if they are
+//!     signed by sudo account.
+//!
 //! ## Genesis Config
 //!
 //! The Sudo pallet depends on the [`GenesisConfig`].
@@ -97,11 +104,13 @@ use sp_std::prelude::*;
 
 use frame_support::{dispatch::GetDispatchInfo, traits::UnfilteredDispatchable};
 
+mod extension;
 #[cfg(test)]
 mod mock;
 #[cfg(test)]
 mod tests;
 
+pub use extension::CheckOnlySudoAccount;
 pub use pallet::*;
 
 type AccountIdLookupOf<T> = <<T as frame_system::Config>::Lookup as StaticLookup>::Source;
@@ -124,7 +133,6 @@ pub mod pallet {
 	}
 
 	#[pallet::pallet]
-	#[pallet::generate_store(pub(super) trait Store)]
 	pub struct Pallet<T>(PhantomData<T>);
 
 	#[pallet::call]
@@ -133,12 +141,9 @@ pub mod pallet {
 		///
 		/// The dispatch origin for this call must be _Signed_.
 		///
-		/// # <weight>
+		/// ## Complexity
 		/// - O(1).
-		/// - Limited storage reads.
-		/// - One DB write (event).
-		/// - Weight of derivative `call` execution + 10,000.
-		/// # </weight>
+		#[pallet::call_index(0)]
 		#[pallet::weight({
 			let dispatch_info = call.get_dispatch_info();
 			(dispatch_info.weight, dispatch_info.class)
@@ -163,10 +168,9 @@ pub mod pallet {
 		///
 		/// The dispatch origin for this call must be _Signed_.
 		///
-		/// # <weight>
+		/// ## Complexity
 		/// - O(1).
-		/// - The weight of this call is defined by the caller.
-		/// # </weight>
+		#[pallet::call_index(1)]
 		#[pallet::weight((*_weight, call.get_dispatch_info().class))]
 		pub fn sudo_unchecked_weight(
 			origin: OriginFor<T>,
@@ -188,11 +192,9 @@ pub mod pallet {
 		///
 		/// The dispatch origin for this call must be _Signed_.
 		///
-		/// # <weight>
+		/// ## Complexity
 		/// - O(1).
-		/// - Limited storage reads.
-		/// - One DB change.
-		/// # </weight>
+		#[pallet::call_index(2)]
 		#[pallet::weight(0)]
 		pub fn set_key(
 			origin: OriginFor<T>,
@@ -214,12 +216,9 @@ pub mod pallet {
 		///
 		/// The dispatch origin for this call must be _Signed_.
 		///
-		/// # <weight>
+		/// ## Complexity
 		/// - O(1).
-		/// - Limited storage reads.
-		/// - One DB write (event).
-		/// - Weight of derivative `call` execution + 10,000.
-		/// # </weight>
+		#[pallet::call_index(3)]
 		#[pallet::weight({
 			let dispatch_info = call.get_dispatch_info();
 			(

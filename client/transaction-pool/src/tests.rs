@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2018-2021 Parity Technologies (UK) Ltd.
+// Copyright (C) Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -164,13 +164,13 @@ impl ChainApi for TestApi {
 		(Hashing::hash(&encoded), len)
 	}
 
-	fn block_body(&self, _id: &BlockId<Self::Block>) -> Self::BodyFuture {
+	fn block_body(&self, _id: <Self::Block as BlockT>::Hash) -> Self::BodyFuture {
 		futures::future::ready(Ok(None))
 	}
 
 	fn block_header(
 		&self,
-		_: &BlockId<Self::Block>,
+		_: <Self::Block as BlockT>::Hash,
 	) -> Result<Option<<Self::Block as BlockT>::Header>, Self::Error> {
 		Ok(None)
 	}

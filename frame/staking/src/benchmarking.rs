@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2020-2022 Parity Technologies (UK) Ltd.
+// Copyright (C) Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -35,7 +35,7 @@ use sp_runtime::{
 use sp_staking::SessionIndex;
 use sp_std::prelude::*;
 
-pub use frame_benchmarking::{
+pub use frame_benchmarking::v1::{
 	account, benchmarks, impl_benchmark_test_suite, whitelist_account, whitelisted_caller,
 };
 use frame_system::RawOrigin;
@@ -307,6 +307,7 @@ benchmarks! {
 		let scenario = ListScenario::<T>::new(origin_weight, true)?;
 		let controller = scenario.origin_controller1.clone();
 		let stash = scenario.origin_stash1;
+		add_slashing_spans::<T>(&stash, s);
 		assert!(T::VoterList::contains(&stash));
 
 		let ed = T::Currency::minimum_balance();
@@ -736,12 +737,10 @@ benchmarks! {
 	}
 
 	get_npos_voters {
-		// number of validator intention.
+		// number of validator intention. we will iterate all of them.
 		let v in (MaxValidators::<T>::get() / 2) .. MaxValidators::<T>::get();
-		// number of nominator intention.
+		// number of nominator intention. we will iterate all of them.
 		let n in (MaxNominators::<T>::get() / 2) .. MaxNominators::<T>::get();
-		// total number of slashing spans. Assigned to validators randomly.
-		let s in 1 .. 20;
 
 		let validators = create_validators_with_nominators_for_era::<T>(
 			v, n, T::MaxNominations::get() as usize, false, None
@@ -750,9 +749,8 @@ benchmarks! {
 		.map(|v| T::Lookup::lookup(v).unwrap())
 		.collect::<Vec<_>>();
 
-		(0..s).for_each(|index| {
-			add_slashing_spans::<T>(&validators[index as usize], 10);
-		});
+		assert_eq!(Validators::<T>::count(), v);
+		assert_eq!(Nominators::<T>::count(), n);
 
 		let num_voters = (v + n) as usize;
 	}: {
@@ -789,7 +787,7 @@ benchmarks! {
 		assert_eq!(MaxNominatorsCount::<T>::get(), Some(u32::MAX));
 		assert_eq!(MaxValidatorsCount::<T>::get(), Some(u32::MAX));
 		assert_eq!(ChillThreshold::<T>::get(), Some(Percent::from_percent(100)));
-		assert_eq!(MinValidatorCommission::<T>::get(), Perbill::from_percent(100));
+		assert_eq!(MinCommission::<T>::get(), Perbill::from_percent(100));
 	}
 
 	set_staking_configs_all_remove {
@@ -807,7 +805,7 @@ benchmarks! {
 		assert!(!MaxNominatorsCount::<T>::exists());
 		assert!(!MaxValidatorsCount::<T>::exists());
 		assert!(!ChillThreshold::<T>::exists());
-		assert!(!MinValidatorCommission::<T>::exists());
+		assert!(!MinCommission::<T>::exists());
 	}
 
 	chill_other {
@@ -857,7 +855,7 @@ benchmarks! {
 		);
 
 		// Set the min commission to 75%
-		MinValidatorCommission::<T>::set(Perbill::from_percent(75));
+		MinCommission::<T>::set(Perbill::from_percent(75));
 		let caller = whitelisted_caller();
 	}: _(RawOrigin::Signed(caller), stash.clone())
 	verify {
@@ -866,6 +864,65 @@ benchmarks! {
 			Validators::<T>::get(&stash),
 			ValidatorPrefs { commission: Perbill::from_percent(75), ..Default::default() }
 		);
+	}
+
+	set_min_commission {
+		let min_commission = Perbill::max_value();
+	}: _(RawOrigin::Root, min_commission)
+	verify {
+		assert_eq!(MinCommission::<T>::get(), Perbill::from_percent(100));
+	}
+
+	set_cmix_id {
+		let stash = create_funded_user::<T>("stash", USER_SEED, 100);
+		let controller = create_funded_user::<T>("controller", USER_SEED, 100);
+		let controller_lookup = T::Lookup::unlookup(controller.clone());
+		let amount = T::Currency::minimum_balance() * 10u32.into();
+		let cmix_id = T::Hashing::hash(&mut USER_SEED.to_be_bytes());
+		Staking::<T>::bond(
+			RawOrigin::Signed(stash.clone()).into(),
+			controller_lookup,
+			amount,
+			None,
+		)?;
+		whitelist_account!(stash);
+	}: _(RawOrigin::Signed(stash), cmix_id)
+	verify {
+		assert!(CmixIds::<T>::contains_key(&cmix_id));
+		assert_eq!(Ledger::<T>::get(&controller).unwrap().cmix_id, Some(cmix_id));
+	}
+
+	transfer_cmix_id {
+		// Create first stash/controller pair
+		let stash = create_funded_user::<T>("stash", USER_SEED, 100);
+		let controller = create_funded_user::<T>("controller", USER_SEED, 100);
+		let controller_lookup = T::Lookup::unlookup(controller.clone());
+		let amount = T::Currency::minimum_balance() * 10u32.into();
+		let cmix_id = T::Hashing::hash(&mut USER_SEED.to_be_bytes());
+		Staking::<T>::bond(
+			RawOrigin::Signed(stash.clone()).into(),
+			controller_lookup,
+			amount.clone(),
+			Some(cmix_id),
+		)?;
+		assert!(CmixIds::<T>::contains_key(&cmix_id));
+		assert_eq!(Ledger::<T>::get(&controller).unwrap().cmix_id, Some(cmix_id));
+		// Create second stash/controller pair
+		let stash2 = create_funded_user::<T>("stash2", USER_SEED, 100);
+		let controller2 = create_funded_user::<T>("controller2", USER_SEED, 100);
+		let controller_lookup2 = T::Lookup::unlookup(controller2.clone());
+		Staking::<T>::bond(
+			RawOrigin::Signed(stash2.clone()).into(),
+			controller_lookup2,
+			amount,
+			None,
+		)?;
+		whitelist_account!(stash);
+	}: _(RawOrigin::Signed(stash), stash2)
+	verify {
+		assert!(CmixIds::<T>::contains_key(&cmix_id));
+		assert!(Ledger::<T>::get(&controller).unwrap().cmix_id.is_none());
+		assert_eq!(Ledger::<T>::get(&controller2).unwrap().cmix_id, Some(cmix_id));
 	}
 
 	impl_benchmark_test_suite!(

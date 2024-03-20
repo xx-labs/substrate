@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2018-2022 Parity Technologies (UK) Ltd.
+// Copyright (C) Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -60,9 +60,9 @@ fn fee_multiplier_increases_and_decreases_on_big_weight() {
 			CheckedExtrinsic {
 				signed: Some((charlie(), signed_extra(0, 0))),
 				function: RuntimeCall::Sudo(pallet_sudo::Call::sudo {
-					call: Box::new(RuntimeCall::System(frame_system::Call::fill_block {
-						ratio: Perbill::from_percent(60),
-					})),
+					call: Box::new(RuntimeCall::RootTesting(
+						pallet_root_testing::Call::fill_block { ratio: Perbill::from_percent(60) },
+					)),
 				}),
 			},
 		],

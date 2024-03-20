@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2020-2022 Parity Technologies (UK) Ltd.
+// Copyright (C) Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -43,9 +43,8 @@ use log::{debug, error, log_enabled};
 use prometheus_endpoint::{register, Counter, CounterVec, Gauge, Opts, U64};
 use prost::Message;
 use rand::{seq::SliceRandom, thread_rng};
-use sc_network_common::{
-	protocol::event::DhtEvent,
-	service::{KademliaKey, NetworkDHTProvider, NetworkSigner, NetworkStateInfo, Signature},
+use sc_network::{
+	event::DhtEvent, KademliaKey, NetworkDHTProvider, NetworkSigner, NetworkStateInfo, Signature,
 };
 use sp_api::{ApiError, ProvideRuntimeApi};
 use sp_authority_discovery::{
@@ -55,7 +54,7 @@ use sp_blockchain::HeaderBackend;
 
 use sp_core::crypto::{key_types, CryptoTypePublicPair, Pair};
 use sp_keystore::CryptoStore;
-use sp_runtime::{generic::BlockId, traits::Block as BlockT};
+use sp_runtime::traits::Block as BlockT;
 
 mod addr_cache;
 /// Dht payload schemas generated from Protobuf definitions via Prost crate in build.rs.
@@ -158,12 +157,15 @@ pub trait AuthorityDiscovery<Block: BlockT> {
 	/// Retrieve authority identifiers of the current and next authority set.
 	async fn authorities(&self, at: Block::Hash)
 		-> std::result::Result<Vec<AuthorityId>, ApiError>;
+
+	/// Retrieve best block hash
+	async fn best_hash(&self) -> std::result::Result<Block::Hash, Error>;
 }
 
 #[async_trait::async_trait]
 impl<Block, T> AuthorityDiscovery<Block> for T
 where
-	T: ProvideRuntimeApi<Block> + Send + Sync,
+	T: ProvideRuntimeApi<Block> + HeaderBackend<Block> + Send + Sync,
 	T::Api: AuthorityDiscoveryApi<Block>,
 	Block: BlockT,
 {
@@ -171,7 +173,11 @@ where
 		&self,
 		at: Block::Hash,
 	) -> std::result::Result<Vec<AuthorityId>, ApiError> {
-		self.runtime_api().authorities(&BlockId::Hash(at))
+		self.runtime_api().authorities(at)
+	}
+
+	async fn best_hash(&self) -> std::result::Result<Block::Hash, Error> {
+		Ok(self.info().best_hash)
 	}
 }
 
@@ -179,7 +185,7 @@ impl<Client, Network, Block, DhtEventStream> Worker<Client, Network, Block, DhtE
 where
 	Block: BlockT + Unpin + 'static,
 	Network: NetworkProvider,
-	Client: AuthorityDiscovery<Block> + HeaderBackend<Block> + 'static,
+	Client: AuthorityDiscovery<Block> + 'static,
 	DhtEventStream: Stream<Item = DhtEvent> + Unpin,
 {
 	/// Construct a [`Worker`].
@@ -378,7 +384,7 @@ where
 	}
 
 	async fn refill_pending_lookups_queue(&mut self) -> Result<()> {
-		let best_hash = self.client.info().best_hash;
+		let best_hash = self.client.best_hash().await?;
 
 		let local_keys = match &self.role {
 			Role::PublishAndDiscover(key_store) => key_store
@@ -598,7 +604,7 @@ where
 			.into_iter()
 			.collect::<HashSet<_>>();
 
-		let best_hash = client.info().best_hash;
+		let best_hash = client.best_hash().await?;
 		let authorities = client
 			.authorities(best_hash)
 			.await

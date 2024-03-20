@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2017-2022 Parity Technologies (UK) Ltd.
+// Copyright (C) Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -95,9 +95,9 @@ pub use sp_arithmetic::biguint;
 pub use sp_arithmetic::helpers_128bit;
 /// Re-export top-level arithmetic stuff.
 pub use sp_arithmetic::{
-	traits::SaturatedConversion, FixedI128, FixedI64, FixedPointNumber, FixedPointOperand,
-	FixedU128, InnerOf, PerThing, PerU16, Perbill, Percent, Permill, Perquintill, Rational128,
-	Rounding, UpperOf,
+	traits::SaturatedConversion, ArithmeticError, FixedI128, FixedI64, FixedPointNumber,
+	FixedPointOperand, FixedU128, InnerOf, PerThing, PerU16, Perbill, Percent, Permill,
+	Perquintill, Rational128, Rounding, UpperOf,
 };
 
 pub use either::Either;
@@ -236,7 +236,7 @@ impl BuildStorage for () {
 /// Consensus engine unique ID.
 pub type ConsensusEngineId = [u8; 4];
 
-/// Signature verify that can work with any known signature types..
+/// Signature verify that can work with any known signature types.
 #[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
 #[derive(Eq, PartialEq, Clone, Encode, Decode, MaxEncodedLen, RuntimeDebug, TypeInfo)]
 pub enum MultiSignature {
@@ -531,7 +531,7 @@ pub type DispatchResult = sp_std::result::Result<(), DispatchError>;
 pub type DispatchResultWithInfo<T> = sp_std::result::Result<T, DispatchErrorWithPostInfo<T>>;
 
 /// Reason why a pallet call failed.
-#[derive(Eq, Clone, Copy, Encode, Decode, Debug, TypeInfo)]
+#[derive(Eq, Clone, Copy, Encode, Decode, Debug, TypeInfo, MaxEncodedLen)]
 #[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
 pub struct ModuleError {
 	/// Module index, matching the metadata module index.
@@ -551,7 +551,7 @@ impl PartialEq for ModuleError {
 }
 
 /// Errors related to transactional storage layers.
-#[derive(Eq, PartialEq, Clone, Copy, Encode, Decode, Debug, TypeInfo)]
+#[derive(Eq, PartialEq, Clone, Copy, Encode, Decode, Debug, TypeInfo, MaxEncodedLen)]
 #[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
 pub enum TransactionalError {
 	/// Too many transactional layers have been spawned.
@@ -576,7 +576,7 @@ impl From<TransactionalError> for DispatchError {
 }
 
 /// Reason why a dispatch call failed.
-#[derive(Eq, Clone, Copy, Encode, Decode, Debug, TypeInfo, PartialEq)]
+#[derive(Eq, Clone, Copy, Encode, Decode, Debug, TypeInfo, PartialEq, MaxEncodedLen)]
 #[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
 pub enum DispatchError {
 	/// Some error occurred.
@@ -659,7 +659,7 @@ impl From<crate::traits::BadOrigin> for DispatchError {
 }
 
 /// Description of what went wrong when trying to complete an operation on a token.
-#[derive(Eq, PartialEq, Clone, Copy, Encode, Decode, Debug, TypeInfo)]
+#[derive(Eq, PartialEq, Clone, Copy, Encode, Decode, Debug, TypeInfo, MaxEncodedLen)]
 #[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
 pub enum TokenError {
 	/// Funds are unavailable.
@@ -695,28 +695,6 @@ impl From<TokenError> for &'static str {
 impl From<TokenError> for DispatchError {
 	fn from(e: TokenError) -> DispatchError {
 		Self::Token(e)
-	}
-}
-
-/// Arithmetic errors.
-#[derive(Eq, PartialEq, Clone, Copy, Encode, Decode, Debug, TypeInfo)]
-#[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
-pub enum ArithmeticError {
-	/// Underflow.
-	Underflow,
-	/// Overflow.
-	Overflow,
-	/// Division by zero.
-	DivisionByZero,
-}
-
-impl From<ArithmeticError> for &'static str {
-	fn from(e: ArithmeticError) -> &'static str {
-		match e {
-			ArithmeticError::Underflow => "An underflow would occur",
-			ArithmeticError::Overflow => "An overflow would occur",
-			ArithmeticError::DivisionByZero => "Division by zero",
-		}
 	}
 }
 
@@ -928,13 +906,6 @@ impl OpaqueExtrinsic {
 	/// Convert an encoded extrinsic to an `OpaqueExtrinsic`.
 	pub fn from_bytes(mut bytes: &[u8]) -> Result<Self, codec::Error> {
 		Self::decode(&mut bytes)
-	}
-}
-
-#[cfg(feature = "std")]
-impl parity_util_mem::MallocSizeOf for OpaqueExtrinsic {
-	fn size_of(&self, ops: &mut parity_util_mem::MallocSizeOfOps) -> usize {
-		self.0.size_of(ops)
 	}
 }
 

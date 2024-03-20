@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2018-2022 Parity Technologies (UK) Ltd.
+// Copyright (C) Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,9 +17,9 @@
 
 use crate::{
 	gas::GasMeter,
-	storage::{self, Storage, WriteOutcome},
-	BalanceOf, CodeHash, Config, ContractInfo, ContractInfoOf, Error, Event, Nonce,
-	Pallet as Contracts, Schedule,
+	storage::{self, DepositAccount, WriteOutcome},
+	BalanceOf, CodeHash, Config, ContractInfo, ContractInfoOf, DebugBufferVec, Determinism, Error,
+	Event, Nonce, Pallet as Contracts, Schedule, System,
 };
 use frame_support::{
 	crypto::ecdsa::ECDSAExt,
@@ -32,7 +32,7 @@ use frame_support::{
 use frame_system::RawOrigin;
 use pallet_contracts_primitives::ExecReturnValue;
 use smallvec::{Array, SmallVec};
-use sp_core::{crypto::UncheckedFrom, ecdsa::Public as ECDSAPublic};
+use sp_core::ecdsa::Public as ECDSAPublic;
 use sp_io::{crypto::secp256k1_ecdsa_recover_compressed, hashing::blake2_256};
 use sp_runtime::traits::{Convert, Hash};
 use sp_std::{marker::PhantomData, mem, prelude::*};
@@ -296,6 +296,18 @@ pub trait Ext: sealing::Sealed {
 
 	/// Sets new code hash for existing contract.
 	fn set_code_hash(&mut self, hash: CodeHash<Self::T>) -> Result<(), DispatchError>;
+
+	/// Returns the number of times the currently executing contract exists on the call stack in
+	/// addition to the calling instance. A value of 0 means no reentrancy.
+	fn reentrance_count(&self) -> u32;
+
+	/// Returns the number of times the specified contract exists on the call stack. Delegated calls
+	/// are not calculated as separate entrance.
+	/// A value of 0 means it does not exist on the call stack.
+	fn account_reentrance_count(&self, account_id: &AccountIdOf<Self::T>) -> u32;
+
+	/// Returns a nonce that is incremented for every instantiated contract.
+	fn nonce(&mut self) -> u64;
 }
 
 /// Describes the different functions that can be exported by an [`Executable`].
@@ -355,6 +367,9 @@ pub trait Executable<T: Config>: Sized {
 
 	/// Size of the instrumented code in bytes.
 	fn code_len(&self) -> u32;
+
+	/// The code does not contain any instructions which could lead to indeterminism.
+	fn is_deterministic(&self) -> bool;
 }
 
 /// The complete call stack of a contract execution.
@@ -394,7 +409,9 @@ pub struct Stack<'a, T: Config, E> {
 	///
 	/// All the bytes added to this field should be valid UTF-8. The buffer has no defined
 	/// structure and is intended to be shown to users as-is for debugging purposes.
-	debug_message: Option<&'a mut Vec<u8>>,
+	debug_message: Option<&'a mut DebugBufferVec<T>>,
+	/// The determinism requirement of this call stack.
+	determinism: Determinism,
 	/// No executable is held by the struct but influences its behaviour.
 	_phantom: PhantomData<E>,
 }
@@ -445,7 +462,7 @@ enum FrameArgs<'a, T: Config, E> {
 		/// If `None` the contract info needs to be reloaded from storage.
 		cached_info: Option<ContractInfo<T>>,
 		/// This frame was created by `seal_delegate_call` and hence uses different code than
-		/// what is stored at [`Self::dest`]. Its caller ([`Frame::delegated_caller`]) is the
+		/// what is stored at [`Self::Call::dest`]. Its caller ([`DelegatedCall::caller`]) is the
 		/// account which called the caller contract
 		delegated_call: Option<DelegatedCall<T, E>>,
 	},
@@ -458,6 +475,8 @@ enum FrameArgs<'a, T: Config, E> {
 		executable: E,
 		/// A salt used in the contract address deriviation of the new contract.
 		salt: &'a [u8],
+		/// The input data is used in the contract address deriviation of the new contract.
+		input_data: &'a [u8],
 	},
 }
 
@@ -473,7 +492,7 @@ enum CachedContract<T: Config> {
 	///
 	/// In this case a reload is neither allowed nor possible. Please note that recursive
 	/// calls cannot remove a contract as this is checked and denied.
-	Terminated,
+	Terminated(DepositAccount<T>),
 }
 
 impl<T: Config> CachedContract<T> {
@@ -492,6 +511,15 @@ impl<T: Config> CachedContract<T> {
 			Some(contract)
 		} else {
 			None
+		}
+	}
+
+	/// Returns `Some` iff the contract is not `Cached::Invalidated`.
+	fn deposit_account(&self) -> Option<&DepositAccount<T>> {
+		match self {
+			CachedContract::Cached(contract) => Some(contract.deposit_account()),
+			CachedContract::Terminated(deposit_account) => Some(&deposit_account),
+			CachedContract::Invalidated => None,
 		}
 	}
 }
@@ -572,14 +600,15 @@ impl<T: Config> CachedContract<T> {
 	/// Terminate and return the contract info.
 	fn terminate(&mut self, account_id: &T::AccountId) -> ContractInfo<T> {
 		self.load(account_id);
-		get_cached_or_panic_after_load!(mem::replace(self, Self::Terminated))
+		let contract = get_cached_or_panic_after_load!(self);
+		let deposit_account = contract.deposit_account().clone();
+		get_cached_or_panic_after_load!(mem::replace(self, Self::Terminated(deposit_account)))
 	}
 }
 
 impl<'a, T, E> Stack<'a, T, E>
 where
 	T: Config,
-	T::AccountId: UncheckedFrom<T::Hash> + AsRef<[u8]>,
 	E: Executable<T>,
 {
 	/// Create and run a new call stack by calling into `dest`.
@@ -600,7 +629,8 @@ where
 		schedule: &'a Schedule<T>,
 		value: BalanceOf<T>,
 		input_data: Vec<u8>,
-		debug_message: Option<&'a mut Vec<u8>>,
+		debug_message: Option<&'a mut DebugBufferVec<T>>,
+		determinism: Determinism,
 	) -> Result<ExecReturnValue, ExecError> {
 		let (mut stack, executable) = Self::new(
 			FrameArgs::Call { dest, cached_info: None, delegated_call: None },
@@ -610,6 +640,7 @@ where
 			schedule,
 			value,
 			debug_message,
+			determinism,
 		)?;
 		stack.run(executable, input_data)
 	}
@@ -633,14 +664,15 @@ where
 		value: BalanceOf<T>,
 		input_data: Vec<u8>,
 		salt: &[u8],
-		debug_message: Option<&'a mut Vec<u8>>,
+		debug_message: Option<&'a mut DebugBufferVec<T>>,
 	) -> Result<(T::AccountId, ExecReturnValue), ExecError> {
 		let (mut stack, executable) = Self::new(
 			FrameArgs::Instantiate {
 				sender: origin.clone(),
-				nonce: Self::initial_nonce(),
+				nonce: <Nonce<T>>::get().wrapping_add(1),
 				executable,
 				salt,
+				input_data: input_data.as_ref(),
 			},
 			origin,
 			gas_meter,
@@ -648,6 +680,7 @@ where
 			schedule,
 			value,
 			debug_message,
+			Determinism::Deterministic,
 		)?;
 		let account_id = stack.top_frame().account_id.clone();
 		stack.run(executable, input_data).map(|ret| (account_id, ret))
@@ -661,10 +694,18 @@ where
 		storage_meter: &'a mut storage::meter::Meter<T>,
 		schedule: &'a Schedule<T>,
 		value: BalanceOf<T>,
-		debug_message: Option<&'a mut Vec<u8>>,
+		debug_message: Option<&'a mut DebugBufferVec<T>>,
+		determinism: Determinism,
 	) -> Result<(Self, E), ExecError> {
-		let (first_frame, executable, nonce) =
-			Self::new_frame(args, value, gas_meter, storage_meter, Weight::zero(), schedule)?;
+		let (first_frame, executable, nonce) = Self::new_frame(
+			args,
+			value,
+			gas_meter,
+			storage_meter,
+			Weight::zero(),
+			schedule,
+			determinism,
+		)?;
 		let stack = Self {
 			origin,
 			schedule,
@@ -676,6 +717,7 @@ where
 			first_frame,
 			frames: Default::default(),
 			debug_message,
+			determinism,
 			_phantom: Default::default(),
 		};
 
@@ -693,6 +735,7 @@ where
 		storage_meter: &mut storage::meter::GenericMeter<T, S>,
 		gas_limit: Weight,
 		schedule: &Schedule<T>,
+		determinism: Determinism,
 	) -> Result<(Frame<T>, E, Option<u64>), ExecError> {
 		let (account_id, contract_info, executable, delegate_caller, entry_point, nonce) =
 			match frame_args {
@@ -712,12 +755,14 @@ where
 
 					(dest, contract, executable, delegate_caller, ExportedFunction::Call, None)
 				},
-				FrameArgs::Instantiate { sender, nonce, executable, salt } => {
-					let account_id =
-						<Contracts<T>>::contract_address(&sender, executable.code_hash(), salt);
-					let trie_id = Storage::<T>::generate_trie_id(&account_id, nonce);
-					let contract =
-						Storage::<T>::new_contract(&account_id, trie_id, *executable.code_hash())?;
+				FrameArgs::Instantiate { sender, nonce, executable, salt, input_data } => {
+					let account_id = Contracts::<T>::contract_address(
+						&sender,
+						executable.code_hash(),
+						input_data,
+						salt,
+					);
+					let contract = ContractInfo::new(&account_id, nonce, *executable.code_hash())?;
 					(
 						account_id,
 						contract,
@@ -728,6 +773,15 @@ where
 					)
 				},
 			};
+
+		// `AllowIndeterminism` will only be ever set in case of off-chain execution.
+		// Instantiations are never allowed even when executing off-chain.
+		if !(executable.is_deterministic() ||
+			(matches!(determinism, Determinism::AllowIndeterminism) &&
+				matches!(entry_point, ExportedFunction::Call)))
+		{
+			return Err(Error::<T>::Indeterministic.into())
+		}
 
 		let frame = Frame {
 			delegate_caller,
@@ -775,6 +829,7 @@ where
 			nested_storage,
 			gas_limit,
 			self.schedule,
+			self.determinism,
 		)?;
 		self.frames.push(frame);
 		Ok(executable)
@@ -827,7 +882,7 @@ where
 			match (entry_point, delegated_code_hash) {
 				(ExportedFunction::Constructor, _) => {
 					// It is not allowed to terminate a contract inside its constructor.
-					if matches!(frame.contract_info, CachedContract::Terminated) {
+					if matches!(frame.contract_info, CachedContract::Terminated(_)) {
 						return Err(Error::<T>::TerminatedInConstructor.into())
 					}
 
@@ -916,11 +971,21 @@ where
 
 			// Record the storage meter changes of the nested call into the parent meter.
 			// If the dropped frame's contract wasn't terminated we update the deposit counter
-			// in its contract info. The load is necessary to to pull it from storage in case
+			// in its contract info. The load is necessary to pull it from storage in case
 			// it was invalidated.
 			frame.contract_info.load(account_id);
+			let deposit_account = frame
+				.contract_info
+				.deposit_account()
+				.expect(
+					"Is only `None` when the info is invalidated.
+				We just re-loaded from storage which either makes the state `Cached` or `Terminated`.
+				qed",
+				)
+				.clone();
 			let mut contract = frame.contract_info.into_contract();
-			prev.nested_storage.absorb(frame.nested_storage, account_id, contract.as_mut());
+			prev.nested_storage
+				.absorb(frame.nested_storage, deposit_account, contract.as_mut());
 
 			// In case the contract wasn't terminated we need to persist changes made to it.
 			if let Some(contract) = contract {
@@ -955,10 +1020,14 @@ where
 			if !persist {
 				return
 			}
+			let deposit_account = self.first_frame.contract_info.deposit_account().expect(
+				"Is only `None` when the info is invalidated. The first frame can't be invalidated.
+				qed",
+			).clone();
 			let mut contract = self.first_frame.contract_info.as_contract();
 			self.storage_meter.absorb(
 				mem::take(&mut self.first_frame.nested_storage),
-				&self.first_frame.account_id,
+				deposit_account,
 				contract.as_deref_mut(),
 			);
 			if let Some(contract) = contract {
@@ -1031,25 +1100,15 @@ where
 
 	/// Increments and returns the next nonce. Pulls it from storage if it isn't in cache.
 	fn next_nonce(&mut self) -> u64 {
-		let next = if let Some(current) = self.nonce {
-			current.wrapping_add(1)
-		} else {
-			Self::initial_nonce()
-		};
+		let next = self.nonce().wrapping_add(1);
 		self.nonce = Some(next);
 		next
-	}
-
-	/// Pull the current nonce from storage.
-	fn initial_nonce() -> u64 {
-		<Nonce<T>>::get().wrapping_add(1)
 	}
 }
 
 impl<'a, T, E> Ext for Stack<'a, T, E>
 where
 	T: Config,
-	T::AccountId: UncheckedFrom<T::Hash> + AsRef<[u8]>,
 	E: Executable<T>,
 {
 	type T = T;
@@ -1136,6 +1195,7 @@ where
 				nonce,
 				executable,
 				salt,
+				input_data: input_data.as_ref(),
 			},
 			value,
 			gas_limit,
@@ -1145,19 +1205,21 @@ where
 	}
 
 	fn terminate(&mut self, beneficiary: &AccountIdOf<Self::T>) -> Result<(), DispatchError> {
+		use frame_support::traits::fungible::Inspect;
 		if self.is_recursive() {
 			return Err(Error::<T>::TerminatedWhileReentrant.into())
 		}
 		let frame = self.top_frame_mut();
 		let info = frame.terminate();
 		frame.nested_storage.terminate(&info);
-		Storage::<T>::queue_trie_for_deletion(&info)?;
-		<Stack<'a, T, E>>::transfer(
-			ExistenceRequirement::AllowDeath,
+		System::<T>::dec_consumers(&frame.account_id);
+		T::Currency::transfer(
 			&frame.account_id,
 			beneficiary,
-			T::Currency::free_balance(&frame.account_id),
+			T::Currency::reducible_balance(&frame.account_id, false),
+			ExistenceRequirement::AllowDeath,
 		)?;
+		info.queue_trie_for_deletion()?;
 		ContractInfoOf::<T>::remove(&frame.account_id);
 		E::remove_user(info.code_hash);
 		Contracts::<T>::deposit_event(
@@ -1175,19 +1237,19 @@ where
 	}
 
 	fn get_storage(&mut self, key: &FixSizedKey) -> Option<Vec<u8>> {
-		Storage::<T>::read(&self.top_frame_mut().contract_info().trie_id, key)
+		self.top_frame_mut().contract_info().read(key)
 	}
 
 	fn get_storage_transparent(&mut self, key: &VarSizedKey<T>) -> Option<Vec<u8>> {
-		Storage::<T>::read(&self.top_frame_mut().contract_info().trie_id, key)
+		self.top_frame_mut().contract_info().read(key)
 	}
 
 	fn get_storage_size(&mut self, key: &FixSizedKey) -> Option<u32> {
-		Storage::<T>::size(&self.top_frame_mut().contract_info().trie_id, key)
+		self.top_frame_mut().contract_info().size(key)
 	}
 
 	fn get_storage_size_transparent(&mut self, key: &VarSizedKey<T>) -> Option<u32> {
-		Storage::<T>::size(&self.top_frame_mut().contract_info().trie_id, key)
+		self.top_frame_mut().contract_info().size(key)
 	}
 
 	fn set_storage(
@@ -1197,8 +1259,7 @@ where
 		take_old: bool,
 	) -> Result<WriteOutcome, DispatchError> {
 		let frame = self.top_frame_mut();
-		Storage::<T>::write(
-			&frame.contract_info.get(&frame.account_id).trie_id,
+		frame.contract_info.get(&frame.account_id).write(
 			key,
 			value,
 			Some(&mut frame.nested_storage),
@@ -1213,8 +1274,7 @@ where
 		take_old: bool,
 	) -> Result<WriteOutcome, DispatchError> {
 		let frame = self.top_frame_mut();
-		Storage::<T>::write(
-			&frame.contract_info.get(&frame.account_id).trie_id,
+		frame.contract_info.get(&frame.account_id).write(
 			key,
 			value,
 			Some(&mut frame.nested_storage),
@@ -1299,9 +1359,16 @@ where
 
 	fn append_debug_buffer(&mut self, msg: &str) -> bool {
 		if let Some(buffer) = &mut self.debug_message {
-			if !msg.is_empty() {
-				buffer.extend(msg.as_bytes());
-			}
+			buffer
+				.try_extend(&mut msg.bytes())
+				.map_err(|_| {
+					log::debug!(
+						target: "runtime::contracts",
+						"Debug buffer (of {} bytes) exhausted!",
+						DebugBufferVec::<T>::bound(),
+					)
+				})
+				.ok();
 			true
 		} else {
 			false
@@ -1328,20 +1395,44 @@ where
 	}
 
 	fn set_code_hash(&mut self, hash: CodeHash<Self::T>) -> Result<(), DispatchError> {
+		let frame = top_frame_mut!(self);
+		if !E::from_storage(hash, self.schedule, &mut frame.nested_gas)?.is_deterministic() {
+			return Err(<Error<T>>::Indeterministic.into())
+		}
 		E::add_user(hash)?;
-		let top_frame = self.top_frame_mut();
-		let prev_hash = top_frame.contract_info().code_hash;
+		let prev_hash = frame.contract_info().code_hash;
 		E::remove_user(prev_hash);
-		top_frame.contract_info().code_hash = hash;
+		frame.contract_info().code_hash = hash;
 		Contracts::<Self::T>::deposit_event(
-			vec![T::Hashing::hash_of(&top_frame.account_id), hash, prev_hash],
+			vec![T::Hashing::hash_of(&frame.account_id), hash, prev_hash],
 			Event::ContractCodeUpdated {
-				contract: top_frame.account_id.clone(),
+				contract: frame.account_id.clone(),
 				new_code_hash: hash,
 				old_code_hash: prev_hash,
 			},
 		);
 		Ok(())
+	}
+
+	fn reentrance_count(&self) -> u32 {
+		let id: &AccountIdOf<Self::T> = &self.top_frame().account_id;
+		self.account_reentrance_count(id).saturating_sub(1)
+	}
+
+	fn account_reentrance_count(&self, account_id: &AccountIdOf<Self::T>) -> u32 {
+		self.frames()
+			.filter(|f| f.delegate_caller.is_none() && &f.account_id == account_id)
+			.count() as u32
+	}
+
+	fn nonce(&mut self) -> u64 {
+		if let Some(current) = self.nonce {
+			current
+		} else {
+			let current = <Nonce<T>>::get();
+			self.nonce = Some(current);
+			current
+		}
 	}
 }
 
@@ -1370,7 +1461,6 @@ mod tests {
 	use crate::{
 		exec::ExportedFunction::*,
 		gas::GasMeter,
-		storage::Storage,
 		tests::{
 			test_utils::{get_balance, hash, place_contract, set_balance},
 			ExtBuilder, RuntimeCall, RuntimeEvent as MetaEvent, Test, TestFilter, ALICE, BOB,
@@ -1513,6 +1603,10 @@ mod tests {
 		fn code_len(&self) -> u32 {
 			0
 		}
+
+		fn is_deterministic(&self) -> bool {
+			true
+		}
 	}
 
 	fn exec_success() -> ExecResult {
@@ -1551,6 +1645,7 @@ mod tests {
 					value,
 					vec![],
 					None,
+					Determinism::Deterministic,
 				),
 				Ok(_)
 			);
@@ -1604,6 +1699,7 @@ mod tests {
 				value,
 				vec![],
 				None,
+				Determinism::Deterministic,
 			)
 			.unwrap();
 
@@ -1645,6 +1741,7 @@ mod tests {
 				value,
 				vec![],
 				None,
+				Determinism::Deterministic,
 			)
 			.unwrap();
 
@@ -1680,6 +1777,7 @@ mod tests {
 				55,
 				vec![],
 				None,
+				Determinism::Deterministic,
 			)
 			.unwrap();
 
@@ -1731,6 +1829,7 @@ mod tests {
 				0,
 				vec![],
 				None,
+				Determinism::Deterministic,
 			);
 
 			let output = result.unwrap();
@@ -1763,6 +1862,7 @@ mod tests {
 				0,
 				vec![],
 				None,
+				Determinism::Deterministic,
 			);
 
 			let output = result.unwrap();
@@ -1793,6 +1893,7 @@ mod tests {
 				0,
 				vec![1, 2, 3, 4],
 				None,
+				Determinism::Deterministic,
 			);
 			assert_matches!(result, Ok(_));
 		});
@@ -1812,9 +1913,8 @@ mod tests {
 			let mut gas_meter = GasMeter::<Test>::new(GAS_LIMIT);
 			let executable =
 				MockExecutable::from_storage(input_data_ch, &schedule, &mut gas_meter).unwrap();
-			set_balance(&ALICE, min_balance * 1000);
-			let mut storage_meter =
-				storage::meter::Meter::new(&ALICE, Some(min_balance * 100), min_balance).unwrap();
+			set_balance(&ALICE, min_balance * 10_000);
+			let mut storage_meter = storage::meter::Meter::new(&ALICE, None, min_balance).unwrap();
 
 			let result = MockStack::run_instantiate(
 				ALICE,
@@ -1873,6 +1973,7 @@ mod tests {
 				value,
 				vec![],
 				None,
+				Determinism::Deterministic,
 			);
 
 			assert_matches!(result, Ok(_));
@@ -1918,6 +2019,7 @@ mod tests {
 				0,
 				vec![],
 				None,
+				Determinism::Deterministic,
 			);
 
 			assert_matches!(result, Ok(_));
@@ -1951,6 +2053,7 @@ mod tests {
 				0,
 				vec![],
 				None,
+				Determinism::Deterministic,
 			);
 			assert_matches!(result, Ok(_));
 		});
@@ -1959,9 +2062,9 @@ mod tests {
 	#[test]
 	fn code_hash_returns_proper_values() {
 		let code_bob = MockLoader::insert(Call, |ctx, _| {
-			// ALICE is not a contract and hence she does not have a code_hash
+			// ALICE is not a contract and hence they do not have a code_hash
 			assert!(ctx.ext.code_hash(&ALICE).is_none());
-			// BOB is a contract and hence he has a code_hash
+			// BOB is a contract and hence it has a code_hash
 			assert!(ctx.ext.code_hash(&BOB).is_some());
 			exec_success()
 		});
@@ -1980,6 +2083,7 @@ mod tests {
 				0,
 				vec![0],
 				None,
+				Determinism::Deterministic,
 			);
 			assert_matches!(result, Ok(_));
 		});
@@ -2007,6 +2111,7 @@ mod tests {
 				0,
 				vec![0],
 				None,
+				Determinism::Deterministic,
 			);
 			assert_matches!(result, Ok(_));
 		});
@@ -2042,6 +2147,7 @@ mod tests {
 				0,
 				vec![0],
 				None,
+				Determinism::Deterministic,
 			);
 			assert_matches!(result, Ok(_));
 		});
@@ -2077,6 +2183,7 @@ mod tests {
 				0,
 				vec![],
 				None,
+				Determinism::Deterministic,
 			);
 
 			assert_matches!(result, Ok(_));
@@ -2145,7 +2252,7 @@ mod tests {
 			// Check that the newly created account has the expected code hash and
 			// there are instantiation event.
 			assert_eq!(
-				Storage::<Test>::code_hash(&instantiated_contract_address).unwrap(),
+				ContractInfo::<Test>::load_code_hash(&instantiated_contract_address).unwrap(),
 				dummy_ch
 			);
 			assert_eq!(
@@ -2187,7 +2294,7 @@ mod tests {
 			);
 
 			// Check that the account has not been created.
-			assert!(Storage::<Test>::code_hash(&instantiated_contract_address).is_none());
+			assert!(ContractInfo::<Test>::load_code_hash(&instantiated_contract_address).is_none());
 			assert!(events().is_empty());
 		});
 	}
@@ -2235,6 +2342,7 @@ mod tests {
 					min_balance * 10,
 					vec![],
 					None,
+					Determinism::Deterministic,
 				),
 				Ok(_)
 			);
@@ -2245,7 +2353,7 @@ mod tests {
 			// Check that the newly created account has the expected code hash and
 			// there are instantiation event.
 			assert_eq!(
-				Storage::<Test>::code_hash(&instantiated_contract_address).unwrap(),
+				ContractInfo::<Test>::load_code_hash(&instantiated_contract_address).unwrap(),
 				dummy_ch
 			);
 			assert_eq!(
@@ -2287,7 +2395,7 @@ mod tests {
 			set_balance(&ALICE, 1000);
 			set_balance(&BOB, 100);
 			place_contract(&BOB, instantiator_ch);
-			let mut storage_meter = storage::meter::Meter::new(&ALICE, Some(100), 0).unwrap();
+			let mut storage_meter = storage::meter::Meter::new(&ALICE, Some(200), 0).unwrap();
 
 			assert_matches!(
 				MockStack::run_call(
@@ -2299,6 +2407,7 @@ mod tests {
 					0,
 					vec![],
 					None,
+					Determinism::Deterministic,
 				),
 				Ok(_)
 			);
@@ -2321,8 +2430,8 @@ mod tests {
 			let mut gas_meter = GasMeter::<Test>::new(GAS_LIMIT);
 			let executable =
 				MockExecutable::from_storage(terminate_ch, &schedule, &mut gas_meter).unwrap();
-			set_balance(&ALICE, 1000);
-			let mut storage_meter = storage::meter::Meter::new(&ALICE, Some(100), 100).unwrap();
+			set_balance(&ALICE, 10_000);
+			let mut storage_meter = storage::meter::Meter::new(&ALICE, None, 100).unwrap();
 
 			assert_eq!(
 				MockStack::run_instantiate(
@@ -2384,6 +2493,7 @@ mod tests {
 				0,
 				vec![0],
 				None,
+				Determinism::Deterministic,
 			);
 			assert_matches!(result, Ok(_));
 		});
@@ -2405,9 +2515,8 @@ mod tests {
 			let min_balance = <Test as Config>::Currency::minimum_balance();
 			let mut gas_meter = GasMeter::<Test>::new(GAS_LIMIT);
 			let executable = MockExecutable::from_storage(code, &schedule, &mut gas_meter).unwrap();
-			set_balance(&ALICE, min_balance * 1000);
-			let mut storage_meter =
-				storage::meter::Meter::new(&ALICE, Some(min_balance * 100), min_balance).unwrap();
+			set_balance(&ALICE, min_balance * 10_000);
+			let mut storage_meter = storage::meter::Meter::new(&ALICE, None, min_balance).unwrap();
 
 			let result = MockStack::run_instantiate(
 				ALICE,
@@ -2432,7 +2541,7 @@ mod tests {
 			exec_success()
 		});
 
-		let mut debug_buffer = Vec::new();
+		let mut debug_buffer = DebugBufferVec::<Test>::try_from(Vec::new()).unwrap();
 
 		ExtBuilder::default().build().execute_with(|| {
 			let min_balance = <Test as Config>::Currency::minimum_balance();
@@ -2450,11 +2559,12 @@ mod tests {
 				0,
 				vec![],
 				Some(&mut debug_buffer),
+				Determinism::Deterministic,
 			)
 			.unwrap();
 		});
 
-		assert_eq!(&String::from_utf8(debug_buffer).unwrap(), "This is a testMore text");
+		assert_eq!(&String::from_utf8(debug_buffer.to_vec()).unwrap(), "This is a testMore text");
 	}
 
 	#[test]
@@ -2465,7 +2575,7 @@ mod tests {
 			exec_trapped()
 		});
 
-		let mut debug_buffer = Vec::new();
+		let mut debug_buffer = DebugBufferVec::<Test>::try_from(Vec::new()).unwrap();
 
 		ExtBuilder::default().build().execute_with(|| {
 			let min_balance = <Test as Config>::Currency::minimum_balance();
@@ -2483,11 +2593,48 @@ mod tests {
 				0,
 				vec![],
 				Some(&mut debug_buffer),
+				Determinism::Deterministic,
 			);
 			assert!(result.is_err());
 		});
 
-		assert_eq!(&String::from_utf8(debug_buffer).unwrap(), "This is a testMore text");
+		assert_eq!(&String::from_utf8(debug_buffer.to_vec()).unwrap(), "This is a testMore text");
+	}
+
+	#[test]
+	fn debug_buffer_is_limited() {
+		let code_hash = MockLoader::insert(Call, move |ctx, _| {
+			ctx.ext.append_debug_buffer("overflowing bytes");
+			exec_success()
+		});
+
+		// Pre-fill the buffer almost up to its limit, leaving not enough space to the message
+		let debug_buf_before =
+			DebugBufferVec::<Test>::try_from(vec![0u8; DebugBufferVec::<Test>::bound() - 5])
+				.unwrap();
+		let mut debug_buf_after = debug_buf_before.clone();
+
+		ExtBuilder::default().build().execute_with(|| {
+			let schedule: Schedule<Test> = <Test as Config>::Schedule::get();
+			let min_balance = <Test as Config>::Currency::minimum_balance();
+			let mut gas_meter = GasMeter::<Test>::new(GAS_LIMIT);
+			set_balance(&ALICE, min_balance * 10);
+			place_contract(&BOB, code_hash);
+			let mut storage_meter = storage::meter::Meter::new(&ALICE, Some(0), 0).unwrap();
+			MockStack::run_call(
+				ALICE,
+				BOB,
+				&mut gas_meter,
+				&mut storage_meter,
+				&schedule,
+				0,
+				vec![],
+				Some(&mut debug_buf_after),
+				Determinism::Deterministic,
+			)
+			.unwrap();
+			assert_eq!(debug_buf_before, debug_buf_after);
+		});
 	}
 
 	#[test]
@@ -2516,6 +2663,7 @@ mod tests {
 				0,
 				CHARLIE.encode(),
 				None,
+				Determinism::Deterministic
 			));
 
 			// Calling into oneself fails
@@ -2529,6 +2677,7 @@ mod tests {
 					0,
 					BOB.encode(),
 					None,
+					Determinism::Deterministic
 				)
 				.map_err(|e| e.error),
 				<Error<Test>>::ReentranceDenied,
@@ -2567,6 +2716,7 @@ mod tests {
 					0,
 					vec![0],
 					None,
+					Determinism::Deterministic
 				)
 				.map_err(|e| e.error),
 				<Error<Test>>::ReentranceDenied,
@@ -2601,6 +2751,7 @@ mod tests {
 				0,
 				vec![],
 				None,
+				Determinism::Deterministic,
 			)
 			.unwrap();
 
@@ -2683,6 +2834,7 @@ mod tests {
 				0,
 				vec![],
 				None,
+				Determinism::Deterministic,
 			)
 			.unwrap();
 
@@ -2770,10 +2922,9 @@ mod tests {
 				MockExecutable::from_storage(succ_fail_code, &schedule, &mut gas_meter).unwrap();
 			let succ_succ_executable =
 				MockExecutable::from_storage(succ_succ_code, &schedule, &mut gas_meter).unwrap();
-			set_balance(&ALICE, min_balance * 1000);
+			set_balance(&ALICE, min_balance * 10_000);
 			let mut storage_meter =
-				storage::meter::Meter::new(&ALICE, Some(min_balance * 500), min_balance * 100)
-					.unwrap();
+				storage::meter::Meter::new(&ALICE, None, min_balance * 100).unwrap();
 
 			MockStack::run_instantiate(
 				ALICE,
@@ -2886,6 +3037,7 @@ mod tests {
 				0,
 				vec![],
 				None,
+				Determinism::Deterministic
 			));
 		});
 	}
@@ -3012,6 +3164,7 @@ mod tests {
 				0,
 				vec![],
 				None,
+				Determinism::Deterministic
 			));
 		});
 	}
@@ -3047,6 +3200,7 @@ mod tests {
 				0,
 				vec![],
 				None,
+				Determinism::Deterministic
 			));
 		});
 	}
@@ -3082,6 +3236,7 @@ mod tests {
 				0,
 				vec![],
 				None,
+				Determinism::Deterministic
 			));
 		});
 	}
@@ -3143,6 +3298,7 @@ mod tests {
 				0,
 				vec![],
 				None,
+				Determinism::Deterministic
 			));
 		});
 	}
@@ -3204,6 +3360,7 @@ mod tests {
 				0,
 				vec![],
 				None,
+				Determinism::Deterministic
 			));
 		});
 	}
@@ -3235,6 +3392,83 @@ mod tests {
 				0,
 				vec![],
 				None,
+				Determinism::Deterministic,
+			);
+			assert_matches!(result, Ok(_));
+		});
+	}
+
+	#[test]
+	fn nonce_api_works() {
+		let fail_code = MockLoader::insert(Constructor, |_, _| exec_trapped());
+		let success_code = MockLoader::insert(Constructor, |_, _| exec_success());
+		let code_hash = MockLoader::insert(Call, move |ctx, _| {
+			// It is set to one when this contract was instantiated by `place_contract`
+			assert_eq!(ctx.ext.nonce(), 1);
+			// Should not change without any instantation in-between
+			assert_eq!(ctx.ext.nonce(), 1);
+			// Should not change with a failed instantiation
+			assert_err!(
+				ctx.ext.instantiate(Weight::zero(), fail_code, 0, vec![], &[],),
+				ExecError {
+					error: <Error<Test>>::ContractTrapped.into(),
+					origin: ErrorOrigin::Callee
+				}
+			);
+			assert_eq!(ctx.ext.nonce(), 1);
+			// Successful instantation increments
+			ctx.ext.instantiate(Weight::zero(), success_code, 0, vec![], &[]).unwrap();
+			assert_eq!(ctx.ext.nonce(), 2);
+			exec_success()
+		});
+
+		ExtBuilder::default().build().execute_with(|| {
+			let min_balance = <Test as Config>::Currency::minimum_balance();
+			let schedule = <Test as Config>::Schedule::get();
+			let mut gas_meter = GasMeter::<Test>::new(GAS_LIMIT);
+			set_balance(&ALICE, min_balance * 1000);
+			place_contract(&BOB, code_hash);
+			let mut storage_meter = storage::meter::Meter::new(&ALICE, None, 0).unwrap();
+			assert_ok!(MockStack::run_call(
+				ALICE,
+				BOB,
+				&mut gas_meter,
+				&mut storage_meter,
+				&schedule,
+				0,
+				vec![],
+				None,
+				Determinism::Deterministic
+			));
+		});
+	}
+
+	/// This works even though random interface is deprecated, as the check to ban deprecated
+	/// functions happens in the wasm stack which is mocked for exec tests.
+	#[test]
+	fn randomness_works() {
+		let subject = b"nice subject".as_ref();
+		let code_hash = MockLoader::insert(Call, move |ctx, _| {
+			let rand = <Test as Config>::Randomness::random(subject);
+			assert_eq!(rand, ctx.ext.random(subject));
+			exec_success()
+		});
+
+		ExtBuilder::default().build().execute_with(|| {
+			let schedule = <Test as Config>::Schedule::get();
+			place_contract(&BOB, code_hash);
+
+			let mut storage_meter = storage::meter::Meter::new(&ALICE, Some(0), 0).unwrap();
+			let result = MockStack::run_call(
+				ALICE,
+				BOB,
+				&mut GasMeter::<Test>::new(GAS_LIMIT),
+				&mut storage_meter,
+				&schedule,
+				0,
+				vec![],
+				None,
+				Determinism::Deterministic,
 			);
 			assert_matches!(result, Ok(_));
 		});
