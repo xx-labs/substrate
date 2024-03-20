@@ -7,7 +7,7 @@
 
 use super::*;
 use frame_support::{
-    assert_noop, assert_ok,
+    assert_noop, assert_ok, bounded_vec,
     traits::{Currency},
 };
 use frame_election_provider_support::ElectionProvider;
@@ -27,7 +27,7 @@ fn calling_bond_correctly_stores_cmix_id() {
             let _ = Balances::make_free_balance_be(&10, stash_value);
 
             // bond with cmix ID
-            assert_ok!(Staking::bond(Origin::signed(10), 11, stash_value, cmix_id(10u8)));
+            assert_ok!(Staking::bond(RuntimeOrigin::signed(10), 11, stash_value, cmix_id(10u8)));
 
             // confirm cmix ID is correctly stored
             assert!(CmixIds::<Test>::contains_key(&cmix_id(10u8).unwrap()));
@@ -44,10 +44,10 @@ fn calling_bond_with_existing_cmix_id_fails() {
             let _ = Balances::make_free_balance_be(&20, stash_value);
 
             // ok to bond the first time
-            assert_ok!(Staking::bond(Origin::signed(10), 11, stash_value, cmix_id(10u8)));
+            assert_ok!(Staking::bond(RuntimeOrigin::signed(10), 11, stash_value, cmix_id(10u8)));
             // if different account tries to bond, fails with ValidatorCmixIdNotUnique
             assert_noop!(
-                Staking::bond(Origin::signed(20), 21, stash_value, cmix_id(10u8)),
+                Staking::bond(RuntimeOrigin::signed(20), 21, stash_value, cmix_id(10u8)),
                 Error::<Test>::ValidatorCmixIdNotUnique,
                 );
         })
@@ -62,10 +62,10 @@ fn calling_validate_from_stash_with_no_cmix_id_fails() {
             let _ = Balances::make_free_balance_be(&10, stash_value);
 
             // bond without cmix id
-            assert_ok!(Staking::bond(Origin::signed(10), 11, stash_value, None));
+            assert_ok!(Staking::bond(RuntimeOrigin::signed(10), 11, stash_value, None));
             // if account tries to validate, fails with ValidatorMustHaveCmixId
             assert_noop!(
-                Staking::validate(Origin::signed(11), Default::default()),
+                Staking::validate(RuntimeOrigin::signed(11), Default::default()),
                 Error::<Test>::ValidatorMustHaveCmixId,
                 );
         })
@@ -79,7 +79,7 @@ fn after_full_unbond_cmix_id_is_removed() {
             let _ = Balances::make_free_balance_be(&10, stash_value);
 
             // bond with cmix ID
-            assert_ok!(Staking::bond(Origin::signed(10), 11, stash_value, cmix_id(10u8)));
+            assert_ok!(Staking::bond(RuntimeOrigin::signed(10), 11, stash_value, cmix_id(10u8)));
 
             // confirm cmix ID is correctly stored
             assert!(CmixIds::<Test>::contains_key(&cmix_id(10u8).unwrap()));
@@ -87,13 +87,13 @@ fn after_full_unbond_cmix_id_is_removed() {
             mock::start_active_era(1);
 
             // unbond full amount
-            assert_ok!(Staking::unbond(Origin::signed(11), stash_value));
+            assert_ok!(Staking::unbond(RuntimeOrigin::signed(11), stash_value));
 
             // trigger future era
             mock::start_active_era(5);
 
             // withdraw unbonded, which will kill stash
-            assert_ok!(Staking::withdraw_unbonded(Origin::signed(11), 0));
+            assert_ok!(Staking::withdraw_unbonded(RuntimeOrigin::signed(11), 0));
 
             // confirm cmix ID is correctly removed
             assert!(!CmixIds::<Test>::contains_key(&cmix_id(10u8).unwrap()));
@@ -110,21 +110,21 @@ fn calling_set_cmix_id_correctly_stores_cmix_id() {
 
             // Can't call function if not bonded
             assert_noop!(
-                Staking::set_cmix_id(Origin::signed(10), cmix_id(10u8).unwrap()),
+                Staking::set_cmix_id(RuntimeOrigin::signed(10), cmix_id(10u8).unwrap()),
                 Error::<Test>::NotStash,
             );
 
             // Bond account without cmix id
-            assert_ok!(Staking::bond(Origin::signed(10), 11, stash_value, None));
+            assert_ok!(Staking::bond(RuntimeOrigin::signed(10), 11, stash_value, None));
 
             // Can't call function from controller
             assert_noop!(
-                Staking::set_cmix_id(Origin::signed(11), cmix_id(10u8).unwrap()),
+                Staking::set_cmix_id(RuntimeOrigin::signed(11), cmix_id(10u8).unwrap()),
                 Error::<Test>::NotStash,
             );
 
             // Set cmix id
-            assert_ok!(Staking::set_cmix_id(Origin::signed(10), cmix_id(10u8).unwrap()));
+            assert_ok!(Staking::set_cmix_id(RuntimeOrigin::signed(10), cmix_id(10u8).unwrap()));
 
             // confirm cmix ID is correctly stored
             assert!(CmixIds::<Test>::contains_key(&cmix_id(10u8).unwrap()));
@@ -140,11 +140,11 @@ fn calling_set_cmix_id_stash_already_has_cmix_id_fails() {
             let _ = Balances::make_free_balance_be(&10, stash_value);
 
             // bond first validator with cmix id
-            assert_ok!(Staking::bond(Origin::signed(10), 11, stash_value, cmix_id(10u8)));
+            assert_ok!(Staking::bond(RuntimeOrigin::signed(10), 11, stash_value, cmix_id(10u8)));
 
             // can't set cmix id, since it's already present
             assert_noop!(
-                Staking::set_cmix_id(Origin::signed(10), cmix_id(11u8).unwrap()),
+                Staking::set_cmix_id(RuntimeOrigin::signed(10), cmix_id(11u8).unwrap()),
                 Error::<Test>::StashAlreadyHasCmixId,
             );
         })
@@ -160,14 +160,14 @@ fn calling_set_cmix_id_with_existing_cmix_id_fails() {
             let _ = Balances::make_free_balance_be(&20, stash_value);
 
             // bond first validator with cmix id
-            assert_ok!(Staking::bond(Origin::signed(10), 11, stash_value, cmix_id(10u8)));
+            assert_ok!(Staking::bond(RuntimeOrigin::signed(10), 11, stash_value, cmix_id(10u8)));
 
             // bond second validator without
-            assert_ok!(Staking::bond(Origin::signed(20), 21, stash_value, None));
+            assert_ok!(Staking::bond(RuntimeOrigin::signed(20), 21, stash_value, None));
 
             // if second vaidator tries to set existing cmix id, fails with ValidatorCmixIdNotUnique
             assert_noop!(
-                Staking::set_cmix_id(Origin::signed(20), cmix_id(10u8).unwrap()),
+                Staking::set_cmix_id(RuntimeOrigin::signed(20), cmix_id(10u8).unwrap()),
                 Error::<Test>::ValidatorCmixIdNotUnique,
             );
         })
@@ -182,9 +182,9 @@ fn transfer_cmix_id_works() {
             let _ = Balances::make_free_balance_be(&12, stash_value);
 
             // Bond account 10 with cmix id
-            assert_ok!(Staking::bond(Origin::signed(10), 11, stash_value, cmix_id(10u8)));
+            assert_ok!(Staking::bond(RuntimeOrigin::signed(10), 11, stash_value, cmix_id(10u8)));
             // Bond account 12 without cmix id
-            assert_ok!(Staking::bond(Origin::signed(12), 13, stash_value, None));
+            assert_ok!(Staking::bond(RuntimeOrigin::signed(12), 13, stash_value, None));
 
             // Confirm cmix ids
             assert_eq!(
@@ -194,7 +194,7 @@ fn transfer_cmix_id_works() {
                     total: 100,
                     active: 100,
                     unlocking: Default::default(),
-                    claimed_rewards: vec![],
+                    claimed_rewards: bounded_vec![],
                     cmix_id: cmix_id(10u8)
                 })
             );
@@ -205,13 +205,13 @@ fn transfer_cmix_id_works() {
                     total: 100,
                     active: 100,
                     unlocking: Default::default(),
-                    claimed_rewards: vec![],
+                    claimed_rewards: bounded_vec![],
                     cmix_id: None
                 })
             );
 
             // Execute cmix id transfer
-            assert_ok!(Staking::transfer_cmix_id(Origin::signed(10), 12));
+            assert_ok!(Staking::transfer_cmix_id(RuntimeOrigin::signed(10), 12));
 
             // Confirm cmix ID was correctly transferred
             assert_eq!(
@@ -221,7 +221,7 @@ fn transfer_cmix_id_works() {
                     total: 100,
                     active: 100,
                     unlocking: Default::default(),
-                    claimed_rewards: vec![],
+                    claimed_rewards: bounded_vec![],
                     cmix_id: None
                 })
             );
@@ -232,7 +232,7 @@ fn transfer_cmix_id_works() {
                     total: 100,
                     active: 100,
                     unlocking: Default::default(),
-                    claimed_rewards: vec![],
+                    claimed_rewards: bounded_vec![],
                     cmix_id: cmix_id(10u8)
                 })
             );
@@ -245,40 +245,40 @@ fn check_transfer_cmix_id_errors() {
         .build_and_execute(|| {
             // Calling from a non stash account fails
             assert_noop!(
-                Staking::transfer_cmix_id(Origin::signed(10), 41),
+                Staking::transfer_cmix_id(RuntimeOrigin::signed(10), 41),
                 Error::<Test>::NotStash,
             );
 
             // Destination is not a stash account
             assert_noop!(
-                Staking::transfer_cmix_id(Origin::signed(11), 40),
+                Staking::transfer_cmix_id(RuntimeOrigin::signed(11), 40),
                 Error::<Test>::NotStash,
             );
 
             // Origin stash has no cmix id
             assert_noop!(
-                Staking::transfer_cmix_id(Origin::signed(41), 11),
+                Staking::transfer_cmix_id(RuntimeOrigin::signed(41), 11),
                 Error::<Test>::StashNoCmixId,
             );
 
             // Destination has cmix id
             assert_noop!(
-                Staking::transfer_cmix_id(Origin::signed(11), 21),
+                Staking::transfer_cmix_id(RuntimeOrigin::signed(11), 21),
                 Error::<Test>::StashAlreadyHasCmixId,
             );
 
             // Origin is validating
             assert_noop!(
-                Staking::transfer_cmix_id(Origin::signed(11), 41),
+                Staking::transfer_cmix_id(RuntimeOrigin::signed(11), 41),
                 Error::<Test>::StashValidating,
             );
 
             // Chill
-            assert_ok!(Staking::chill(Origin::signed(10)));
+            assert_ok!(Staking::chill(RuntimeOrigin::signed(10)));
 
             // Origin is active validator
             assert_noop!(
-                Staking::transfer_cmix_id(Origin::signed(11), 41),
+                Staking::transfer_cmix_id(RuntimeOrigin::signed(11), 41),
                 Error::<Test>::StashActiveValidator,
             );
         })
@@ -293,7 +293,7 @@ fn check_transfer_cmix_id_election_ongoing() {
 
             // Election is ongoing
             assert_noop!(
-                Staking::transfer_cmix_id(Origin::signed(11), 41),
+                Staking::transfer_cmix_id(RuntimeOrigin::signed(11), 41),
                 Error::<Test>::ElectionOngoing,
             );
         })
@@ -304,7 +304,7 @@ fn check_transfer_cmix_id_elected_validator() {
     ExtBuilder::default()
         .build_and_execute(|| {
             // Bond extra coins to get validator 31 elected
-            assert_ok!(Staking::bond_extra(Origin::signed(31), 1000));
+            assert_ok!(Staking::bond_extra(RuntimeOrigin::signed(31), 1000));
 
             // Advance sessions
             start_session(1);
@@ -313,11 +313,11 @@ fn check_transfer_cmix_id_elected_validator() {
             // Election happened, next validators should be available
 
             // Stop validating
-            assert_ok!(Staking::chill(Origin::signed(30)));
+            assert_ok!(Staking::chill(RuntimeOrigin::signed(30)));
 
             // Stash is elected validator
             assert_noop!(
-                Staking::transfer_cmix_id(Origin::signed(31), 41),
+                Staking::transfer_cmix_id(RuntimeOrigin::signed(31), 41),
                 Error::<Test>::StashElectedValidator,
             );
         })
@@ -470,8 +470,8 @@ fn exposure_not_counted_for_custody_accounts() {
                 .all(|exposure| exposure.others.is_empty()));
 
             // Custody account nominates 11 and 31
-            assert_ok!(Staking::bond(Origin::signed(101), 100, 2000, None));
-            assert_ok!(Staking::nominate(Origin::signed(100), vec![11, 31]));
+            assert_ok!(Staking::bond(RuntimeOrigin::signed(101), 100, 2000, None));
+            assert_ok!(Staking::nominate(RuntimeOrigin::signed(100), vec![11, 31]));
 
             // Start next era, electing 11 and 31
             mock::start_active_era(1);
@@ -545,8 +545,8 @@ fn custody_account_affects_payout() {
         .custody_accounts(&[a]) // A is a custody account
         .build_and_execute(|| {
             // Custody account nominates 31
-            assert_ok!(Staking::bond(Origin::signed(101), 100, 2000, None));
-            assert_ok!(Staking::nominate(Origin::signed(100), vec![31]));
+            assert_ok!(Staking::bond(RuntimeOrigin::signed(101), 100, 2000, None));
+            assert_ok!(Staking::nominate(RuntimeOrigin::signed(100), vec![31]));
 
             // Start next era, electing 21 and 31
             mock::start_active_era(1);
@@ -601,12 +601,12 @@ fn custody_account_affects_payout_nominators() {
         .custody_accounts(&[a]) // A is a custody account
         .build_and_execute(|| {
             // Custody account nominates 31
-            assert_ok!(Staking::bond(Origin::signed(101), 100, 2000, None));
-            assert_ok!(Staking::nominate(Origin::signed(100), vec![31]));
+            assert_ok!(Staking::bond(RuntimeOrigin::signed(101), 100, 2000, None));
+            assert_ok!(Staking::nominate(RuntimeOrigin::signed(100), vec![31]));
 
             // Nominator
-            assert_ok!(Staking::bond(Origin::signed(61), 60, 2000, None));
-            assert_ok!(Staking::nominate(Origin::signed(60), vec![31]));
+            assert_ok!(Staking::bond(RuntimeOrigin::signed(61), 60, 2000, None));
+            assert_ok!(Staking::nominate(RuntimeOrigin::signed(60), vec![31]));
 
             // Start next era, electing 21 and 31
             mock::start_active_era(1);
@@ -756,31 +756,31 @@ fn min_validator_commission_check_works() {
         .balance_factor(100)
         .min_validator_commission(Perbill::from_percent(2))
         .build_and_execute(|| {
-            assert_ok!(Staking::bond(Origin::signed(3), 4, 500, cmix_id(3u8)));
+            assert_ok!(Staking::bond(RuntimeOrigin::signed(3), 4, 500, cmix_id(3u8)));
             // commission lower than allowed is not enough to be a validator
             assert_noop!(
 				Staking::validate(
-				    Origin::signed(4),
+				    RuntimeOrigin::signed(4),
 				    ValidatorPrefs { commission: Perbill::from_percent(1), blocked: false }
 				),
-				Error::<Test>::ValidatorCommissionTooLow,
+				Error::<Test>::CommissionTooLow,
 			);
 
             // 2 percent is exactly enough
             assert_ok!(
 				Staking::validate(
-				    Origin::signed(4),
+				    RuntimeOrigin::signed(4),
 				    ValidatorPrefs { commission: Perbill::from_percent(2), blocked: false }
 				)
 			);
 
             // chill
-            assert_ok!(Staking::chill(Origin::signed(4)));
+            assert_ok!(Staking::chill(RuntimeOrigin::signed(4)));
 
             // >2 percent is also enough
             assert_ok!(
 				Staking::validate(
-				    Origin::signed(4),
+				    RuntimeOrigin::signed(4),
 				    ValidatorPrefs { commission: Perbill::from_percent(3), blocked: false }
 				)
 			);

@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2019-2022 Parity Technologies (UK) Ltd.
+// Copyright (C) Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -25,6 +25,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 /// Error type for the authority discovery module.
 #[derive(Debug, thiserror::Error)]
+#[allow(missing_docs)]
 pub enum Error {
 	#[error("Received dht value found event with records with different keys.")]
 	ReceivingDhtValueFoundEventWithDifferentKeys,
@@ -76,4 +77,7 @@ pub enum Error {
 
 	#[error("Received authority record without a valid signature for the remote peer id.")]
 	MissingPeerIdSignature,
+
+	#[error("Unable to fetch best block.")]
+	BestBlockFetchingError,
 }
